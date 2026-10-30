@@ -24,7 +24,7 @@ import * as identity from "./identity.mjs";
 import * as device from "./device.mjs";
 import * as directory from "./directory.mjs";
 import * as permissions from "./permissions.mjs";
-import { settings } from "./settings.mjs";
+import { settings, shareableEndpoint } from "./settings.mjs";
 
 export const KINDS = ["self", "roster", "revoke-device"];
 export const MAX_RECORD_BYTES = 16 * 1024;
@@ -52,7 +52,7 @@ export function selfRecord(project) {
     owner: me.ownerId,
     label: me.label,
     keys: me.keys,
-    endpoint: settings().endpoint ?? null,
+    endpoint: shareableEndpoint(settings().endpoint),
     at: new Date().toISOString(),
   });
 }
@@ -69,7 +69,7 @@ export function rosterRecord(project) {
       label: m.label,
       keys: m.keys,
       fingerprint: m.fingerprint,
-      endpoint: m.endpoint ?? null,
+      endpoint: shareableEndpoint(m.endpoint),
     }));
   const standing = permissions
     .list()
@@ -153,10 +153,12 @@ export function apply(project, records, { now = Date.now() } = {}) {
         continue;
       }
       // The keys of an owner never change, because the owner id comes from
-      // them. Only the address of the gateway changes here.
-      if (record.endpoint && record.endpoint !== known.endpoint) {
-        directory.setEndpoint(project, record.owner, record.endpoint);
-        out.updated.push({ owner: record.owner, endpoint: record.endpoint });
+      // them. Only the address of the gateway changes here. A record of an older
+      // version can carry a loopback address, and here that names this machine.
+      const endpoint = shareableEndpoint(record.endpoint);
+      if (endpoint && endpoint !== known.endpoint) {
+        directory.setEndpoint(project, record.owner, endpoint);
+        out.updated.push({ owner: record.owner, endpoint });
       }
       continue;
     }
@@ -171,10 +173,11 @@ export function apply(project, records, { now = Date.now() } = {}) {
       if (identity.ownerIdOf(member.keys) !== member.ownerId) continue;
       if (directory.isRevoked(project, member.ownerId)) continue;
       const known = directory.member(project, member.ownerId);
+      const endpoint = shareableEndpoint(member.endpoint);
       if (known) {
-        if (member.endpoint && member.endpoint !== known.endpoint) {
-          directory.setEndpoint(project, member.ownerId, member.endpoint);
-          out.updated.push({ owner: member.ownerId, endpoint: member.endpoint });
+        if (endpoint && endpoint !== known.endpoint) {
+          directory.setEndpoint(project, member.ownerId, endpoint);
+          out.updated.push({ owner: member.ownerId, endpoint });
         }
         continue;
       }
@@ -184,7 +187,7 @@ export function apply(project, records, { now = Date.now() } = {}) {
         label: member.label,
         keys: member.keys,
         createdAt: record.at,
-      }, { source: "roster", endpoint: member.endpoint ?? null });
+      }, { source: "roster", endpoint });
       out.added.push({ owner: member.ownerId, label: member.label });
     }
     // The owner said accept, hold, or refuse one time, on one machine. Every

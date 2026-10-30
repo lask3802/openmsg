@@ -18,7 +18,12 @@ apt-get update -qq
 apt-get install -y -qq ca-certificates curl git openssl xz-utils >/dev/null
 
 if [ "$(/usr/local/bin/node --version 2>/dev/null || true)" != "v$NODE_VERSION" ]; then
-  name="node-v$NODE_VERSION-linux-x64"
+  case "$(uname -m)" in
+    x86_64) arch=x64 ;;
+    aarch64) arch=arm64 ;;
+    *) echo "no Node build for $(uname -m)" >&2; exit 1 ;;
+  esac
+  name="node-v$NODE_VERSION-linux-$arch"
   work=$(mktemp -d)
   curl -fsSL -o "$work/$name.tar.xz" "https://nodejs.org/dist/v$NODE_VERSION/$name.tar.xz"
   curl -fsSL -o "$work/SHASUMS256.txt" "https://nodejs.org/dist/v$NODE_VERSION/SHASUMS256.txt"
@@ -36,13 +41,25 @@ else
   git clone --quiet "$REPO" /opt/openmsg
 fi
 git -C /opt/openmsg checkout --quiet --detach "origin/$REF" 2>/dev/null || git -C /opt/openmsg checkout --quiet --detach "$REF"
+if [ ! -f /opt/openmsg/deploy/relay/openmsg-relay.service ]; then
+  echo "the ref $REF holds no deploy/relay. Name a ref that holds it" >&2
+  exit 1
+fi
 
 install -d -o openmsg -g openmsg -m 700 /var/lib/openmsg-relay
 install -d -o root -g openmsg -m 750 /etc/openmsg-relay
 
 # A self-signed certificate. Each gateway pins it with `relay use --ca`, so no
 # public authority is in the path. An existing certificate stays, because every
-# gateway pins it.
+# gateway pins it. A certificate for another address cannot work, so a new one
+# takes its place, and every gateway needs the new file. The old pair stays as
+# .old, because a mistyped address must not cost the pair that each gateway pins.
+if [ -f /etc/openmsg-relay/relay.crt ] &&
+  ! openssl x509 -in /etc/openmsg-relay/relay.crt -noout -ext subjectAltName 2>/dev/null | grep -qFw "IP Address:$ADDRESS"; then
+  echo "the certificate does not name $ADDRESS. Each gateway needs the new one" >&2
+  mv /etc/openmsg-relay/relay.crt /etc/openmsg-relay/relay.crt.old
+  mv /etc/openmsg-relay/relay.key /etc/openmsg-relay/relay.key.old
+fi
 if [ ! -f /etc/openmsg-relay/relay.crt ]; then
   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 3650 \
     -keyout /etc/openmsg-relay/relay.key -out /etc/openmsg-relay/relay.crt \
@@ -57,6 +74,13 @@ install -m 644 /opt/openmsg/deploy/relay/openmsg-relay.service /etc/systemd/syst
 systemctl daemon-reload
 systemctl enable --now openmsg-relay >/dev/null
 systemctl restart openmsg-relay
+# `restart` returns before the program reads its certificate.
+sleep 2
+if ! systemctl is-active --quiet openmsg-relay; then
+  journalctl -u openmsg-relay -n 20 --no-pager >&2 || true
+  echo "the relay did not start" >&2
+  exit 1
+fi
 
 echo "relay: wss://$ADDRESS:$PORT"
 echo "certificate: /etc/openmsg-relay/relay.crt"

@@ -22,6 +22,7 @@ import { randomUUID } from "node:crypto";
 const RPC_TIMEOUT_MS = 15000;
 // A thread that changed in this window counts as a session that runs.
 const LIVE_WINDOW_MS = 12 * 3600 * 1000;
+const STOP_TIMEOUT_MS = 2000;
 
 function asCommand(file) {
   return /\.m?js$/.test(file) ? { command: process.execPath, args: [file] } : { command: file, args: [] };
@@ -64,6 +65,25 @@ export function resolveCodex(env = process.env) {
     if (fs.existsSync(script)) return asCommand(script);
   }
   return null;
+}
+
+// The npm install of Codex is a node script that starts the real binary. A kill
+// ends the script only, and the binary stays. The binary shares the stdin of the
+// script and it stops when stdin ends, so that comes first. The kill is for a
+// server that does not stop.
+function stopServer(child) {
+  return new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve();
+    const timer = setTimeout(() => {
+      child.kill();
+      resolve();
+    }, STOP_TIMEOUT_MS);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    child.stdin.end();
+  });
 }
 
 // It starts one app-server, gives `use` a function that calls a method, and stops
@@ -119,7 +139,7 @@ export async function withAppServer(use, { timeoutMs = RPC_TIMEOUT_MS, env = pro
     child.stdin.write(JSON.stringify({ method: "initialized" }) + "\n");
     return await use(call);
   } finally {
-    child.kill();
+    await stopServer(child);
   }
 }
 
@@ -152,16 +172,26 @@ export async function listThreads({ limit = 50, now = Date.now(), options } = {}
   if (!out.result) throw new Error(`codex thread/list failed: ${JSON.stringify(out.error ?? out.failed ?? "timeout")}`);
   return (out.result.data ?? [])
     .filter((t) => !t.ephemeral && now - t.updatedAt * 1000 <= LIVE_WINDOW_MS)
-    .map((t) => ({
-      vendor: "codex",
-      id: t.id,
-      name: t.cwd ? `${path.win32.basename(t.cwd)}-${t.id.slice(-4)}` : t.id.slice(-8),
-      pid: null,
-      cwd: t.cwd ?? null,
-      status: "unknown",
-      title: t.name ?? t.preview ?? null,
-      startedAt: t.createdAt ? t.createdAt * 1000 : null,
-      updatedAt: t.updatedAt * 1000,
-      transport: { kind: "codex-queue" },
-    }));
+    .map(agentOf);
+}
+
+// One thread by its id, at any age. It gives null when Codex does not know it.
+export async function readThread(threadId, { options } = {}) {
+  const out = await withAppServer((call) => call("thread/read", { threadId, includeTurns: false }), options);
+  return out.result?.thread ? agentOf(out.result.thread) : null;
+}
+
+function agentOf(t) {
+  return {
+    vendor: "codex",
+    id: t.id,
+    name: t.cwd ? `${path.win32.basename(t.cwd)}-${t.id.slice(-4)}` : t.id.slice(-8),
+    pid: null,
+    cwd: t.cwd ?? null,
+    status: "unknown",
+    title: t.name ?? t.preview ?? null,
+    startedAt: t.createdAt ? t.createdAt * 1000 : null,
+    updatedAt: t.updatedAt * 1000,
+    transport: { kind: "codex-queue" },
+  };
 }

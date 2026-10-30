@@ -9,6 +9,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { lockDown } from "./windows.mjs";
 
 // The home reads from the environment at each call, as in selfregistry.mjs.
 function dir() {
@@ -22,20 +23,26 @@ function fileOf(id) {
 // A session that has not started for this long holds a dead token.
 export const MAX_AGE_MS = 14 * 24 * 3600 * 1000;
 
-function prune(now) {
+// A session can run for longer than that, so the age alone removes nothing that
+// `isLive` still names.
+function prune(now, isLive) {
   for (const f of fs.readdirSync(dir())) {
     const full = path.join(dir(), f);
     try {
-      if (now - fs.statSync(full).mtimeMs > MAX_AGE_MS) fs.rmSync(full, { force: true });
+      if (now - fs.statSync(full).mtimeMs <= MAX_AGE_MS) continue;
+      if (isLive(JSON.parse(fs.readFileSync(full, "utf8")).id)) continue;
+      fs.rmSync(full, { force: true });
     } catch {
       // Another hook can take the same file away. Nothing depends on it.
     }
   }
 }
 
-export function put({ id, socket, token, now = Date.now() }) {
+export function put({ id, socket, token, now = Date.now(), isLive = () => false }) {
+  const fresh = !fs.existsSync(dir());
   fs.mkdirSync(dir(), { recursive: true, mode: 0o700 });
-  prune(now);
+  if (fresh) lockDown(dir());
+  prune(now, isLive);
   fs.writeFileSync(fileOf(id), JSON.stringify({ id, socket, token }), { mode: 0o600 });
 }
 

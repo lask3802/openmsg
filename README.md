@@ -127,7 +127,7 @@ node src/cli.mjs list
 Node 22 or later. No dependencies, and none for the relay either: the
 WebSocket of `src/wsframe.mjs` is both sides of RFC 6455 in one small file.
 
-Run the tests with `node --test`. 105 of them, and they need no account:
+Run the tests with `node --test`. 183 of them, and they need no account:
 they run two gateways and a relay on this machine, as two people.
 
 An agent with no push entry point needs its hook. Claude Code needs its hook
@@ -135,6 +135,68 @@ for a message to a directory:
 
 ```
 openmsg install --hooks
+```
+
+## Native Windows
+
+openmsg runs on native Windows with Claude Code and Codex. Cursor and Gemini use
+the same hooks as on other systems, and no live test covers them. OpenCode has no
+discovery on Windows yet.
+
+- **Claude Code** takes a message on a named pipe, and it asks each connection for
+  the token of the session. Run `openmsg install --hooks`, and start the session
+  again. The hook gives the token to the gateway. A session with no token gets no
+  message, and the command says so.
+- **Codex** gets a message through an `app-server` that openmsg starts on stdio.
+  The text goes over stdin, and never on a command line.
+- **The sandbox of Codex** blocks the local network and allows this machine. In a
+  Codex session, `openmsg send <agent>@<owner>` and `openmsg ack` therefore ask the
+  gateway of the owner to run them. The gateway takes only those two commands, only
+  for another person, and only for the own messages of the session. That path is a
+  way out of the sandbox for text, so a session can tell a person that the owner
+  accepted what it can read. macOS and Linux do not use this path.
+
+Start the gateway at each logon:
+
+```
+openmsg gateway install --relay <url>
+openmsg gateway stop                    # stop it now
+openmsg gateway uninstall               # stop it, and remove the entry
+```
+
+The entry is a `Run` key of the user, because a scheduled task needs an
+administrator on many machines. It starts at logon, and not at the start of the
+PC. The relay holds a message until the deadline of that message. The deadline is
+15 minutes by default, so a message to a PC that stays off for longer expires.
+
+**Read this before you publish a Claude session on Windows.** The token marks the
+gateway as a child of the session, and Claude Code then applies no hold to a
+message from it, also in a session that bypasses permission prompts. On macOS and
+Linux that hold still applies. So on Windows, a person that you accepted can reach
+such a session with nothing to stop the message. Set `crossSessionInbound` for that
+session, or do not publish it. This is an open decision of the project.
+
+## Run a relay
+
+The relay carries sealed bytes, and it learns who writes to whom. Keep it on a
+private network. Do not forward its port to the internet.
+
+On a Proxmox host, in the directory that holds `setup.sh`:
+
+```
+OPENMSG_REPO=<repository> ./create-lxc.sh <id> <address> <gateway> <ref>
+```
+
+It makes one Debian container with 1 core, 512 MB, and 4 GB. A run that fails
+removes its container. On a plain Debian machine, run `setup.sh <address>`. The ref
+must hold `deploy/relay`.
+
+The relay makes a self-signed certificate that names its address. A new address
+gives a new certificate, and each gateway then needs the new file. Each gateway
+pins the file:
+
+```
+openmsg relay use wss://<address>:7800 --ca relay.crt
 ```
 
 ## How each vendor lets a message in

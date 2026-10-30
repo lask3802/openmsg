@@ -20,6 +20,7 @@ import * as directory from "./directory.mjs";
 import * as device from "./device.mjs";
 import * as seal from "./seal.mjs";
 import { execFileSync } from "node:child_process";
+import { onPath } from "./windows.mjs";
 import { randomUUID, createHash } from "node:crypto";
 
 export const VERSION = 2;
@@ -315,12 +316,15 @@ export function digestOf(message) {
 // step, so the text gives no key and no fingerprint. `openmsg dir` shows them.
 export function layoutOf({ message, verified }) {
   const o = message.openmsg;
-  const who = `${o.from.vendor}:${o.from.name ?? o.from.id}@${verified.label}`;
+  // The sender chooses these names, and the frame around the text puts them in a
+  // command that the agent can run. A quote there would end that command.
+  const plain = (value) => String(value).replace(/[^\p{L}\p{N} ._:/@-]/gu, "_");
+  const who = plain(`${o.from.vendor}:${o.from.name ?? o.from.id}@${verified.label}`);
   const id = shortId(message.messageId);
-  const device = verified.device ? [["Device", verified.deviceLabel ?? verified.device]] : [];
+  const device = verified.device ? [["Device", plain(verified.deviceLabel ?? verified.device)]] : [];
   const work = o.workspace
-    ? [`The sender saw branch ${o.workspace.branch ?? "unknown"} at commit ` +
-       `${(o.workspace.commit ?? "unknown").slice(0, 12)}${o.workspace.dirty ? ", with changes that are not committed" : ""}. ` +
+    ? [`The sender saw branch ${plain(o.workspace.branch ?? "unknown")} at commit ` +
+       `${plain(o.workspace.commit ?? "unknown").slice(0, 12)}${o.workspace.dirty ? ", with changes that are not committed" : ""}. ` +
        "That is its machine, not yours."]
     : [];
   return layout(
@@ -341,9 +345,13 @@ export function render(record, options = {}) {
 }
 
 // The claim about the checkout of the sender. It reads git, and it gives null
-// when the directory is not a repository.
-export function workspaceOf(cwd = process.cwd()) {
-  const git = (args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+// when the directory is not a repository. The checkout can be hostile: on Windows
+// a bare name finds a git.exe in it first, and `core.fsmonitor` in its config names
+// a program that `git status` runs.
+export function workspaceOf(cwd = process.cwd(), { platform = process.platform } = {}) {
+  const program = platform === "win32" ? onPath("git.exe") : "git";
+  if (!program) return null;
+  const git = (args) => execFileSync(program, ["-c", "core.fsmonitor=false", ...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
   try {
     return { branch: git(["rev-parse", "--abbrev-ref", "HEAD"]), commit: git(["rev-parse", "HEAD"]), dirty: git(["status", "--porcelain"]).length > 0 };
   } catch {

@@ -29,3 +29,17 @@ export function endpointFor(host, port) {
   const name = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
   return `http://${name}:${port}`;
 }
+
+// A loopback address means "this machine", so on another machine it names that
+// other machine. It stays here, and a message for this owner takes the relay.
+export function shareableEndpoint(url) {
+  if (!url) return null;
+  let host;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return null;
+  }
+  const here = ["localhost", "localhost.", "[::1]", "[::ffff:7f00:1]", "0.0.0.0", "[::]"].includes(host);
+  return here || /^127\.\d+\.\d+\.\d+$/.test(host) ? null : url;
+}

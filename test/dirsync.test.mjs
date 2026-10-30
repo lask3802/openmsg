@@ -50,7 +50,13 @@ async function asAsync(home, fn) {
 const alice = as(DESK, () => identity.create({ label: "alice" }));
 const bob = as(BOB, () => identity.create({ label: "bob" }));
 const running = await relay.serve({ port: 0, host: "127.0.0.1" });
-after(() => running.close());
+// A failed test leaves its connection open, and a close waits for each connection.
+const sockets = new Set();
+running.server.on("upgrade", (_, socket) => sockets.add(socket));
+after(() => {
+  for (const s of sockets) s.destroy();
+  return running.close();
+});
 for (const home of [DESK, LAPTOP, BOB]) as(home, () => saveSettings({ relay: running.url }));
 
 const offer = as(DESK, () => invite.create({ label: "web-app", endpoint: "http://127.0.0.1:7001" }));
@@ -124,7 +130,7 @@ test("the second machine of one owner learns the whole directory", async () => {
   const known = as(LAPTOP, () => directory.member(PROJECT, bob.ownerId));
   assert.ok(known, "the laptop holds Bob now");
   assert.equal(known.fingerprint, identity.fingerprint(bob), "with the fingerprint that Alice compared");
-  assert.equal(known.endpoint, "http://127.0.0.1:7002", "and the address of his gateway");
+  assert.equal(known.endpoint, null, "a loopback address names no other machine, so the roster leaves it out");
   assert.deepEqual(known.keys, bob.keys);
 });
 

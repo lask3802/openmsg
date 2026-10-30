@@ -254,6 +254,38 @@ The adapters of version 0.1:
 | Gemini CLI | A hook that reads the mailbox at the end of a turn | No |
 | Cursor CLI | A hook that reads the mailbox at the end of a turn | No |
 
+On native Windows, these entry points differ:
+
+1. Claude Code uses a named pipe in place of the Unix socket. A connection must
+   send an auth line first, with the token of that session. A connection with
+   no valid auth line gets no error, and the session delivers nothing.
+2. Claude Code gives the token only to the hooks and the commands of that
+   session. The `SessionStart` hook therefore writes the token to
+   `<home>/claude-tokens`, with the path of the pipe. The token holds for that
+   path, and for no other.
+3. An implementation must refuse to deliver to a Claude session when it holds
+   no token for that session. The sender must learn this from the command, and
+   not from a message that never arrives.
+4. Node cannot reach the socket of the Codex daemon on Windows. The
+   implementation starts its own `codex app-server` on stdio, and it sends
+   `thread/queue/add` there. Every app-server of a user shares one queue, so
+   the message reaches a thread that another app-server holds, such as the one
+   inside the Codex app.
+5. The npm install of Codex is a `.cmd` file, and Node runs that file only
+   through a shell. The text of a message comes from another person, so it must
+   never go on a command line. It goes over stdin.
+6. An implementation must start a system tool by its full path. A bare name
+   on Windows searches the working directory first.
+7. OpenCode has no discovery on Windows in this version.
+
+**Open decision.** A token marks the connection as a child of the session. If
+no `crossSessionInbound` value applies, Claude Code delivers from a child with no
+hold, also in a session that bypasses permission prompts. On macOS and Linux the
+adapter sends no stored token, so that hold still applies. On native Windows no
+connection works without the token, so a message from an accepted person reaches
+such a session with no hold from Claude Code. Set `crossSessionInbound` for the
+session, or do not publish a session that bypasses permission prompts.
+
 ## 8. Replies
 
 A reply is a new message. It is not a return value.
@@ -369,7 +401,7 @@ The entry points for a project message:
 | Codex, OpenCode | None yet |
 
 `openmsg install --hooks` writes the hooks. For Claude Code, it writes a
-`SessionStart` hook into `~/.claude/settings.json`.
+`SessionStart` hook into the `settings.json` of each Claude config directory.
 
 ## 12. Identity of the sender
 
@@ -387,9 +419,12 @@ An implementation finds the sender in this order:
    name.
 3. The process tree. If a parent process is an agent, the implementation uses
    the session of that process. On macOS, `pgrep` leaves out the parents of
-   its own process, so the implementation gives it `-a`.
+   its own process, so the implementation gives it `-a`. On Windows, one call
+   gives the whole process table.
 4. The working directory. If one session runs in this directory, and the vendor
-   is known, the implementation uses that session.
+   is known, the implementation uses that session. On Windows, a process table
+   with no agent is not evidence of an agent, because Codex gives its thread id
+   to every command there.
 
 If two sessions match, the implementation must refuse to send, and must tell the
 user to set `OPENMSG_SELF`.

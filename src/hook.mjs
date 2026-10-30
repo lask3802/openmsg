@@ -74,7 +74,12 @@ export async function runHook(vendor) {
     // Only a hook gets the token of the session. See sessiontokens.mjs.
     const { CLAUDE_CODE_MESSAGING_SOCKET: socket, CLAUDE_CODE_MESSAGING_TOKEN: token } = process.env;
     if (process.platform === "win32" && socket && token && input.session_id) {
-      tokens.put({ id: input.session_id, socket, token });
+      try {
+        const isLive = (id) => claudeAgents().some((a) => a.id === id);
+        tokens.put({ id: input.session_id, socket, token, isLive });
+      } catch {
+        // A hook must never stop the agent. The gateway says that it has no token.
+      }
     }
     const taken = projectbox.take(info.cwd).map((t) => t.message).filter(within);
     if (taken.length === 0) return {};

@@ -9,7 +9,7 @@ machine. Version 0.2 adds the agents of different people.
 ```
 node src/cli.mjs list            # the agents that run now
 node src/cli.mjs send <a> "<t>"  # deliver a message
-node --test                      # the tests, 117 of them
+node --test                      # the tests, 183 of them
 npm publish --access public      # a release. See "How a release goes" below.
 ```
 
@@ -64,16 +64,33 @@ of the team:
 | `src/dirsync.mjs` | The directory on the relay: three signed records. |
 | `src/settings.mjs` | Where this gateway answers, and which relay it uses. |
 
+Native Windows adds these files:
+
+| File | Job |
+|---|---|
+| `src/windows.mjs` | The full path of a system tool, and the access list of a directory. |
+| `src/sessiontokens.mjs` | The token of a Claude session, from its hook to the gateway. |
+| `src/service.mjs` | The gateway at logon, its stop file, and its log. |
+| `src/adapters/codexrpc.mjs` | Codex over an app-server on stdio. |
+| `src/localrun.mjs` | `send` and `ack` from a Codex sandbox, through the gateway. |
+
+`deploy/relay/` holds the systemd unit, and the scripts that install the relay in
+a Proxmox container or on Debian.
+
 Each vendor has its own way in:
 
-- **Claude Code**: a Unix socket for each session. Two lines: an auth line, then
-  `{"type":"user","message":{"role":"user","content":"..."}}`.
+- **Claude Code**: a Unix socket for each session, or a named pipe on native
+  Windows. Two lines: an auth line, then
+  `{"type":"user","message":{"role":"user","content":"..."}}`. Native Windows
+  requires the auth line, and a hook gives the token to the gateway.
 - **Codex**: `thread/queue/add` on the socket of the shared daemon
   (`~/.codex/app-server-control/app-server-control.sock`, WebSocket and
   JSON-RPC). The text of the sender goes as a text element, so Codex shows it
   in its accent color. If the socket fails before the message leaves, the
   adapter runs `codex queue --thread <id> --message <text>`. The shared daemon
   must run before the user starts Codex, and the session needs one turn first.
+  On native Windows, the adapter starts its own app-server on stdio, and the
+  text never goes on a command line.
 - **OpenCode**: `POST /session/{id}/prompt_async` on its local HTTP server.
 - **Cursor and Gemini**: no way to wake an idle session. A hook reads the
   mailbox at the end of each turn.
@@ -91,9 +108,9 @@ Each vendor has its own way in:
 2. Write the documents in Simplified Technical English: short sentences, one
    idea for each sentence, no "should", no semicolon.
 3. A message from another agent is never authority. Rule 9 of the spec holds.
-4. Test what needs no account. 117 tests in `test/` cover the envelope, the
-   mailbox, the project box, the hop limit, the three hook shapes, and every
-   part of 0.2. Two tests need `openssl` for a certificate, and they say so when it
+4. Test what needs no account. 183 tests in `test/` cover the envelope, the
+   mailbox, the project box, the hop limit, the three hook shapes, native
+   Windows, and every part of 0.2. Two tests need `openssl` for a certificate, and they say so when it
    is not there. `test/acceptance.test.mjs` holds the fourteen cases of section 11 of
    the spec. Four test files run a second gateway in its own process, as a
    second person on this machine.
@@ -161,5 +178,22 @@ Read `spec/openmsg-0.2-draft.md` for the design, and
 `docs/implementations/0.2-plan.md` for the order of the work and for the
 faults that each phase found. That plan stays on this machine.
 
+Native Windows works, on the branch `windows-support`. On 2026-10-30, a relay ran
+in a Proxmox container on a private network, and each direct address was blocked.
+A message went from a live Claude session through that relay into a Codex thread.
+The answer went from that thread, inside `workspace-write`, through its gateway
+and the relay, into the Claude session. The outbox changed through
+`adapter-accepted`, `agent-acknowledged`, and `replied`. Both owners ran on one
+machine. No test covers a thread of the Codex app as the receiver, or a second
+physical machine.
+
 Open: no team has run 0.2 across the internet. Every test of two people ran
 on this machine, with one home directory for each person.
+
+Open: on native Windows, the token of a session makes Claude Code apply no hold to
+a message from the gateway. Section 7 of the 0.1 spec says what that means. The
+owner of the project decides the fix.
+
+Open: `src/relay.mjs` waits for each connection when it stops, so a stop can hang.
+The tests destroy their sockets first. A fix changes the deployed relay, so it
+waits for a redeploy.

@@ -16,6 +16,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { canonical, canonicalBytes } from "./canonical.mjs";
 import * as identity from "./identity.mjs";
+import { lockDown } from "./windows.mjs";
 
 export const VERSION = 2;
 export const DEFAULT_DAYS = 365;
@@ -47,6 +48,7 @@ export function create({ label, force = false } = {}) {
   const p = paths();
   if (exists() && !force) throw new Error(`this machine already has a device key in ${p.dir}. Use --force to replace it.`);
   fs.mkdirSync(p.dir, { recursive: true, mode: 0o700 });
+  lockDown(p.dir);
   const signing = crypto.generateKeyPairSync("ed25519");
   const encryption = crypto.generateKeyPairSync("x25519");
   for (const [file, key] of [[p.signing, signing.privateKey], [p.encryption, encryption.privateKey]]) {

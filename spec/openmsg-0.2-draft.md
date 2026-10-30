@@ -153,6 +153,20 @@ Rules:
     does not know which machine sent. A receipt for an owner that is offline
     waits until it is old, and every machine that connects reads it. A
     machine that reads one twice writes the same state twice.
+17. A sender with a direct address and a relay tries the direct address first.
+    If that address does not answer, the message goes through the relay. The
+    receiver knows a message by its id. A first copy that is still `queued` can
+    reach the agent too, so the agent must expect a repeat, as section 8 says.
+18. A loopback address names one machine, so it never leaves that machine. An
+    invitation, a `self` record, a roster, and a routing answer carry no loopback
+    address. A reader of a directory record ignores one, because a record of an
+    older version can hold it.
+19. The relay can run in one small container on a private network.
+    `deploy/relay/create-lxc.sh` makes the container on Proxmox, and
+    `deploy/relay/setup.sh` installs the relay on Debian, with a self-signed
+    certificate that names the address of the relay. Each gateway pins that
+    certificate with `openmsg relay use <url> --ca <file>`. Do not forward the
+    port of the relay to the internet.
 
 ## 5. Authentication of a message
 
@@ -355,6 +369,27 @@ Rules:
 8. The epoch of a published session counts the moves of one alias. A new
    session under one name takes the next epoch, and a message for the old epoch
    is refused.
+9. On native Windows, the sandbox of Codex blocks the local network and allows
+   this machine. A command in a Codex session that sends to another person, or
+   acknowledges a message, therefore asks the gateway to run it. This local path
+   has these rules:
+   - The gateway answers it only from this machine, and only with the key in
+     `<home>/gateway.key`.
+   - It runs `send` and `ack`, and no other command.
+   - A `send` must name an agent of another person. A message to a session on
+     this machine stays out of this path, because the gateway holds the tokens of
+     the local Claude sessions.
+   - `ack` and `--reply-to` name only a message for the session that asks.
+   - The command runs in the home directory of openmsg, and not in the working
+     directory of the gateway. A sandbox can write to that directory.
+   - The path is a way out of the sandbox for text. A session can tell a person
+     that the owner accepted what it can read.
+   macOS and Linux do not use this path.
+10. A published session of Codex on native Windows goes by its thread id, at any
+    age. The list of threads there holds only the threads of the last 12 hours.
+11. The text that the receiving agent reads carries a command to answer. The
+    sender chooses the names in that command, so the implementation replaces each
+    character that could end the quoted address.
 
 ## 10. Relation to A2A
 

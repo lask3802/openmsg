@@ -60,8 +60,12 @@ as(BOB, () => register({ ...SESSION, cwd: "/work/web-app" }));
 
 const running = await relay.serve({ port: 0, host: "127.0.0.1" });
 const children = [];
+// A failed test leaves its connection open, and a close waits for each connection.
+const sockets = new Set();
+running.server.on("upgrade", (_, socket) => sockets.add(socket));
 after(() => {
   for (const c of children) c.kill();
+  for (const s of sockets) s.destroy();
   return running.close();
 });
 const RELAY_URL = running.url;
@@ -315,4 +319,34 @@ test("the relay drops a message that passed its deadline", async () => {
   });
   assert.equal(answer.type, "refused");
   assert.equal(answer.reason, "expired");
+});
+
+test("messages reach the handler one at a time, and a fault in one stops no other", async () => {
+  for (const child of children) child.kill();
+  await sleep(300);
+  const rows = as(ALICE, () => directory.routingOf(PROJECT, bob.ownerId).rows);
+  for (const text of ["first of two", "second of two"]) (await aliceSends(text, rows)).link.close();
+
+  let active = 0;
+  let most = 0;
+  let seen = 0;
+  const faults = [];
+  await asAsync(BOB, async () => {
+    const link = await relaylink.open(RELAY_URL, {
+      onDeliver: async () => {
+        active += 1;
+        most = Math.max(most, active);
+        seen += 1;
+        await sleep(100);
+        active -= 1;
+        if (seen === 1) throw new Error("one bad frame");
+      },
+      onError: (frame) => faults.push(frame.error),
+    });
+    await sleep(800);
+    link.close();
+  });
+  assert.ok(seen >= 2, `the second message still arrives, and ${seen} did`);
+  assert.equal(most, 1, "a second message waits for the first");
+  assert.deepEqual(faults, ["one bad frame"]);
 });

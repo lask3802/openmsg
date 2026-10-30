@@ -77,8 +77,12 @@ for (const home of [ALICE, BOB]) {
 
 const running = await relay.serve({ port: 0, host: "127.0.0.1" });
 const children = [];
+// A failed test leaves its connection open, and a close waits for each connection.
+const sockets = new Set();
+running.server.on("upgrade", (_, socket) => sockets.add(socket));
 after(() => {
   for (const c of children) c.kill();
+  for (const s of sockets) s.destroy();
   return running.close();
 });
 
@@ -224,10 +228,13 @@ test("3. a message that arrives while the receiving agent is busy", async () => 
     return { delivered: true, transport: "stub" };
   };
   readByBob = [];
-  const [one, two] = await Promise.all([
+  // The outer home holds for both. Alone, the first one to end takes the home away
+  // from the second, and that one writes to the real home of the person who runs
+  // the tests.
+  const [one, two] = await asAsync(BOB, () => Promise.all([
     bobReceives(letterToBob("while busy, one"), { deliver: slow }),
     bobReceives(letterToBob("while busy, two"), { deliver: slow }),
-  ]);
+  ]));
   assert.equal(one.status, "adapter-accepted");
   assert.equal(two.status, "adapter-accepted");
   assert.equal(readByBob.length, 2);

@@ -24,6 +24,7 @@ import * as device from "./device.mjs";
 import * as dirsync from "./dirsync.mjs";
 import * as notes from "./notes.mjs";
 import * as service from "./service.mjs";
+import * as localrun from "./localrun.mjs";
 import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import path from "node:path";
@@ -60,8 +61,10 @@ For the agents of another person, on another machine:
   openmsg dir endpoint <owner> <url>  where the gateway of that owner answers
   openmsg dir revoke <project-id> <owner-id> [--reason <text>]
   openmsg gateway install           start the gateway at each logon (Windows)
-  openmsg gateway uninstall         stop that
-  openmsg gateway start [--port <n>] [--host <h>]
+     [--port <n>] [--host <h>] [--relay <url>]
+  openmsg gateway uninstall         stop that, and stop the gateway
+  openmsg gateway stop              stop the gateway that runs now
+  openmsg gateway start [--port <n>] [--host <h>] [--relay <url>] [--log <file>]
   openmsg publish <agent>           let the project reach this session
   openmsg unpublish <alias>         take a session back
   openmsg permit <owner> <accept|hold|refuse>
@@ -344,16 +347,22 @@ async function cmdSendRemote(target, text, replyTo, args) {
   const project = projectId(args);
   const member = memberOf(project, ownerName);
   const me = identity.load();
+  // A sandbox reaches the gateway for one reason: to write to another person. The
+  // own owner name would lead back to a session on this machine.
+  if (process.env.OPENMSG_LOCAL && member.ownerId === me.ownerId) {
+    throw new Error("this path sends only to another person");
+  }
 
   // A reply keeps the conversation of the message that it answers. That
   // message is in the store of messages that arrived from other people.
   const answered = replyTo ? inbound.findByPrefix(replyTo) : null;
   if (replyTo && !answered) throw new Error(`no message ${replyTo} arrived from another person`);
+  if (answered) mustBeOwnMessage(answered);
 
   // A member with a direct address takes the message over HTTP. A member with
   // no address takes it through the relay of the team.
   const relayUrl = gateway.settings().relay;
-  const direct = Boolean(member.endpoint);
+  let direct = Boolean(member.endpoint);
   if (!direct && !relayUrl) {
     throw new Error(
       `no way to reach ${member.label}: no endpoint, and no relay. ` +
@@ -361,14 +370,28 @@ async function cmdSendRemote(target, text, replyTo, args) {
     );
   }
   const receipts = [];
-  const link = direct ? null : await relaylink.open(relayUrl, { onReceipt: (frame) => receipts.push(frame) });
+  const openLink = () => relaylink.open(relayUrl, { onReceipt: (frame) => receipts.push(frame) });
+  let link = direct ? null : await openLink();
 
   let rows;
   let label = member.label;
   try {
-    const answer = direct
-      ? await gateway.routingOf(member, project)
-      : await gateway.routingOverRelay(link, member, project);
+    let answer;
+    if (direct) {
+      try {
+        answer = await gateway.routingOf(member, project);
+      } catch (e) {
+        // A direct address can be dead, or out of reach from this network. The
+        // relay is the path that does not depend on it.
+        if (!relayUrl) throw e;
+        console.error(`openmsg: ${e.message}. The relay takes this message`);
+        direct = false;
+        link = await openLink();
+        answer = await gateway.routingOverRelay(link, member, project);
+      }
+    } else {
+      answer = await gateway.routingOverRelay(link, member, project);
+    }
     rows = answer.routing;
     label = answer.label ?? label;
   } catch (e) {
@@ -417,8 +440,20 @@ async function cmdSendRemote(target, text, replyTo, args) {
   };
   let out;
   if (direct) {
-    out = await gateway.send(member, wire);
-  } else {
+    try {
+      out = await gateway.send(member, wire);
+    } catch (e) {
+      // The address answered a moment ago and it is gone now. The receiver knows
+      // a message by its id, and the agent expects a repeat (rule 8.7 of the spec).
+      if (!relayUrl) throw e;
+      console.error(`openmsg: ${e.message}. The relay takes this message`);
+      direct = false;
+    }
+  }
+  if (!direct) {
+    // The first try can fail with the relay down too. Then the routing data of
+    // an earlier day named the session, and this is the first link that works.
+    link ??= await openLink();
     // The sender keeps its copy until a receipt arrives. The relay keeps its
     // own copy at the same time.
     outbox.put({ messageId: message.messageId, to: member.ownerId, project, alias: `${alias}@${label}`, wire, state: "sending" });
@@ -451,6 +486,15 @@ async function cmdSendRemote(target, text, replyTo, args) {
     inbound.setStatus(answered.messageId, "replied");
     const told = await gateway.reportState(answered, "replied").catch((e) => ({ sent: false, why: e.message }));
     if (!told.sent) console.error(`openmsg: ${answered.from.label} does not know yet: ${told.why}`);
+  }
+}
+
+// The gateway runs a command for any Codex session, and each session answers for
+// its own messages only. Without this rule, a session could tell a sender that
+// another session read a message.
+function mustBeOwnMessage(row) {
+  if (process.env.OPENMSG_LOCAL && row.target?.session !== process.env.CODEX_THREAD_ID) {
+    throw new Error(`message ${row.messageId.slice(0, 8)} went to another session`);
   }
 }
 
@@ -614,41 +658,80 @@ function cmdOutbox(args) {
   }
 }
 
+let lastWords = null;
+
 async function cmdGateway(args) {
   const [sub = "start", ...rest] = args;
   if (sub === "install") {
-    const out = await service.install(fileURLToPath(new URL("cli.mjs", import.meta.url)));
+    const out = await service.install(fileURLToPath(new URL("cli.mjs", import.meta.url)), {
+      port: gateway.settings().port ?? null,
+      givenPort: flag(rest, "port"),
+      host: flag(rest, "host"),
+      relay: flag(rest, "relay"),
+    });
     console.log(`the gateway starts at each logon. Log: ${out.log}`);
     console.log(`Start it now without a window: ${service.runCommand(out.launcher)}`);
     return;
   }
   if (sub === "uninstall") {
-    await service.uninstall();
-    console.log("the gateway does not start at logon now. A gateway that runs now keeps running");
+    const out = await service.uninstall({ port: gateway.settings().port ?? null });
+    console.log("the gateway does not start at logon now");
+    if (!out.stopped) console.log(`a program still answers on port ${gateway.settings().port}`);
     return;
   }
-  if (sub !== "start") throw new Error("usage: openmsg gateway start [--port <n>] [--host <h>] [--relay <url>] | gateway install | gateway uninstall");
-  const me = identity.load();
+  if (sub === "stop") {
+    const out = await service.stopGateway(gateway.settings().port ?? null);
+    console.log(out.stopped ? (out.running ? "the gateway stopped" : "no gateway answers") : `a program still answers on port ${gateway.settings().port}`);
+    if (!out.stopped) process.exitCode = 1;
+    return;
+  }
+  if (sub !== "start") {
+    throw new Error("usage: openmsg gateway start [--port <n>] [--host <h>] [--relay <url>] [--log <file>] | gateway stop | gateway install [--port <n>] [--host <h>] [--relay <url>] | gateway uninstall");
+  }
   const host = flag(rest, "host") ?? "127.0.0.1";
   const port = Number(flag(rest, "port") ?? 7801);
-  const stamp = (line) => console.log(`${new Date().toISOString()} ${line}`);
+  const logFile = flag(rest, "log");
+  const say = logFile ? service.logTo(logFile) : console.log;
+  const stamp = (line) => say(`${new Date().toISOString()} ${line}`);
+  // A process with no window has no place for the last words of a crash, or for
+  // the reason of a failed start.
+  if (logFile) {
+    lastWords = (line) => stamp(`the gateway failed: ${line}`);
+    process.on("uncaughtException", (e) => {
+      lastWords(e.stack ?? e.message);
+      process.exit(1);
+    });
+  }
+  const me = identity.load();
+  const stopFile = service.paths().stop;
   const running = await gateway.serve({ port, host, log: stamp });
-  gateway.saveSettings({ host, port: running.port, endpoint: running.url });
+  // Only a start that holds the port takes this file away. A start that fails
+  // must not eat a stop for the gateway that runs.
+  fs.rmSync(stopFile, { force: true });
   const relayUrl = flag(rest, "relay") ?? gateway.settings().relay ?? null;
+  gateway.saveSettings({ host, port: running.port, endpoint: running.url });
   if (relayUrl) {
     gateway.saveSettings({ relay: relayUrl });
     await gateway.joinRelay(relayUrl, { log: stamp });
   }
-  console.log(`gateway of ${me.label} (${me.ownerId}) listens on ${running.url}`);
+  stamp(`gateway of ${me.label} (${me.ownerId}) listens on ${running.url}`);
   const rows = published.list();
-  if (rows.length === 0) console.log("nothing is published. Run: openmsg publish <agent>");
-  for (const r of rows) console.log(`published ${r.alias} · project ${r.project} · epoch ${r.epoch}`);
+  if (rows.length === 0) stamp("nothing is published. Run: openmsg publish <agent>");
+  for (const r of rows) stamp(`published ${r.alias} · project ${r.project} · epoch ${r.epoch}`);
+  let stopping = false;
   const stop = () => {
-    console.log("gateway stopped");
+    if (stopping) return;
+    stopping = true;
+    stamp("gateway stopped");
+    // A connection that stays open must not hold the stop.
+    setTimeout(() => process.exit(0), 3000).unref();
     running.close().then(() => process.exit(0));
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
+  setInterval(() => {
+    if (fs.existsSync(stopFile)) stop();
+  }, 1000).unref();
 }
 
 async function cmdPublish(args) {
@@ -736,6 +819,7 @@ async function cmdAck(args) {
   const [id] = positional(args);
   const row = inbound.findByPrefix(id ?? "");
   if (!row) throw new Error(`no message ${id}. Run: openmsg held --all`);
+  mustBeOwnMessage(row);
   if (!["adapter-accepted", "agent-acknowledged", "replied"].includes(row.status)) {
     throw new Error(`message ${id} is "${row.status}", and an acknowledgement belongs to a message that reached the agent`);
   }
@@ -767,6 +851,9 @@ async function cmdAccept(args) {
   }
   const out = await gateway.release(row, { deliver: deliverLocal, log: (line) => console.log(line) });
   console.log(`${out.status}${out.reason ? `: ${out.detail ?? out.reason}` : ""} (${row.messageId})`);
+  // The sender saw "held". Without this receipt its outbox stays there.
+  const told = await gateway.reportState(row, out.status, { reason: out.reason ?? null }).catch((e) => ({ sent: false, why: e.message }));
+  if (!told.sent) console.error(`openmsg: ${row.from.label} does not know yet: ${told.why}`);
 }
 
 
@@ -828,7 +915,7 @@ function cmdInvite(args) {
       label: flag(rest, "project"),
       projectId: flag(rest, "project-id"),
       hours: Number(flag(rest, "hours") ?? invite.DEFAULT_HOURS),
-      endpoint: flag(rest, "endpoint") ?? gateway.settings().endpoint ?? null,
+      endpoint: flag(rest, "endpoint") ?? gateway.shareableEndpoint(gateway.settings().endpoint),
     });
     console.log(`project      ${out.project.id} (${out.project.label})`);
     console.log(`fingerprint  ${out.fingerprint}`);
@@ -853,7 +940,7 @@ function cmdInvite(args) {
   if (sub === "accept") {
     const [token] = positional(rest, ["fingerprint", "endpoint"]);
     const out = invite.accept(token, flag(rest, "fingerprint"), {
-      endpoint: flag(rest, "endpoint") ?? gateway.settings().endpoint ?? null,
+      endpoint: flag(rest, "endpoint") ?? gateway.shareableEndpoint(gateway.settings().endpoint),
     });
     console.log(`${out.peer.ownerId} (${out.peer.label}) is now a member of ${out.project.id}`);
     if (out.reply) {
@@ -971,7 +1058,15 @@ function commandName() {
 
 const [cmd, ...args] = process.argv.slice(2);
 try {
-  if (cmd === "list") await cmdList(args);
+  // A write to a pipe is not finished on Windows when the process ends, so the
+  // code goes in exitCode, and the process ends by itself.
+  const asked = localrun.shouldAsk(cmd, args) ? await localrun.ask([cmd, ...args]) : null;
+  if (asked) {
+    process.stdout.write(asked.stdout);
+    process.stderr.write(asked.stderr);
+    process.exitCode = asked.code;
+  }
+  else if (cmd === "list") await cmdList(args);
   else if (cmd === "note") await cmdNote(args);
   else if (cmd === "send") {
     const rest = positional(args, ["reply-to", "project", "key"]);
@@ -1018,6 +1113,7 @@ try {
   else if (cmd === "whoami") console.log(address(await self()));
   else console.log(USAGE);
 } catch (e) {
+  lastWords?.(e.message);
   console.error(`openmsg: ${e.message}`);
   process.exit(1);
 }

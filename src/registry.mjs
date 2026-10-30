@@ -5,7 +5,8 @@ import path from "node:path";
 import os from "node:os";
 import { execFile } from "node:child_process";
 import { registered } from "./selfregistry.mjs";
-import { listThreads } from "./adapters/codexrpc.mjs";
+import { listThreads, readThread } from "./adapters/codexrpc.mjs";
+import { system32 } from "./windows.mjs";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -190,8 +191,10 @@ function mtime(file) {
 // The pids of the programs with this exact name. On macOS, pgrep leaves out
 // the parents of its own process, so an agent that runs this command does not
 // find itself. `-a` puts them back. Linux pgrep leaves out only itself, and
-// there `-a` means another thing.
+// there `-a` means another thing. Windows has no pgrep, and a bare name there
+// can run a file from the working directory.
 async function pgrep(name) {
+  if (process.platform === "win32") return [];
   const args = process.platform === "darwin" ? ["-a", "-x", name] : ["-x", name];
   const { stdout } = await run("pgrep", args);
   return stdout.trim().split("\n").filter(Boolean);
@@ -383,6 +386,14 @@ export async function findSession(vendor, id) {
   return (await agentsOfVendor(vendor)).find((a) => a.id === id) ?? null;
 }
 
+// A published session can stay quiet for days, and it still takes a message. The
+// list of Codex threads on Windows leaves out a quiet thread, so a published
+// thread goes by its id. Every other vendor keeps a record of what runs now.
+export async function sessionById(vendor, id, { platform = process.platform, options } = {}) {
+  if (vendor !== "codex" || platform !== "win32") return null;
+  return readThread(id, { options }).catch(() => null);
+}
+
 export async function findAgent(query) {
   const agents = await allAgents();
   const [vendor, name] = query.includes(":") ? [query.split(":")[0], query.split(":").slice(1).join(":")] : [null, query];
@@ -430,37 +441,103 @@ async function processList() {
   }
   // Windows has no `ps`. Each line has the same shape as a line of `ps`.
   const script = "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $_.Name }";
-  const { stdout } = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+  const shell = system32("WindowsPowerShell", "v1.0", "powershell.exe");
+  const { stdout } = await run(shell, ["-NoProfile", "-NonInteractive", "-Command", script], {
     maxBuffer: 16 * 1024 * 1024,
     windowsHide: true,
   });
   return stdout.replace(/\.exe\r?$/gim, "").replace(/\r/g, "");
 }
 
-export async function runsUnder(sessionPid) {
-  let table;
+async function processTable() {
   try {
     const stdout = await processList();
-    table = new Map(
+    return new Map(
       stdout.trim().split("\n").map((l) => {
         const [pid, ppid, ...comm] = l.trim().split(/\s+/);
         return [Number(pid), { ppid: Number(ppid), name: path.basename(comm.join(" ")) }];
       }),
     );
   } catch {
-    table = new Map();
+    return new Map();
   }
+}
+
+export async function runsUnder(sessionPid) {
+  const table = await processTable();
   // In a sandbox, `ps` can give nothing. Then the socket is the only evidence.
   if (!table.has(process.ppid)) return true;
+  return isUnder(table, process.ppid, sessionPid);
+}
+
+// Git Bash on Windows imitates a fork with a process that ends early. The chain
+// of a command in a script therefore stops at a shell, and the parent of that
+// shell is gone. A gap there says nothing about who started the command, so the
+// socket stays as the evidence. A gap anywhere else is the top of the chain.
+const FORKING_SHELLS = new Set(["sh", "bash"]);
+
+export function isUnder(table, start, sessionPid, platform = process.platform) {
   const seen = new Set();
-  for (let pid = process.ppid; pid > 1 && !seen.has(pid); ) {
+  let last = null;
+  for (let pid = start; pid > 1 && !seen.has(pid); ) {
     if (pid === sessionPid) return true;
     seen.add(pid);
     const p = table.get(pid);
-    if (!p || OTHER_AGENTS.has(p.name)) return false;
+    if (!p) return platform === "win32" && FORKING_SHELLS.has(last);
+    if (OTHER_AGENTS.has(p.name)) return false;
+    last = p.name;
     pid = p.ppid;
   }
   return false;
+}
+
+// The parents of one process, and the name of each. Windows has no `ps`, and one
+// call there gives the whole table.
+async function parentLine(pid) {
+  if (process.platform === "win32") {
+    const table = await processTable();
+    const line = [];
+    for (let current = pid; line.length < 8 && table.has(current) && !line.includes(current); ) {
+      line.push(current);
+      current = table.get(current).ppid;
+    }
+    return { line, names: line.map((p) => table.get(p).name) };
+  }
+  const line = await ancestors(pid);
+  const names = await Promise.all(
+    line.map(async (p) => {
+      try {
+        const { stdout } = await run("ps", ["-o", "comm=", "-p", String(p)]);
+        return path.basename(stdout.trim());
+      } catch {
+        return "";
+      }
+    }),
+  );
+  return { line, names };
+}
+
+// The session in this directory, when the parents show its vendor. In a sandbox,
+// `ps` can give nothing. Then the working directory is the only evidence left, so
+// openmsg uses it alone. Codex on Windows gives its thread id to every command, so
+// no name there is no evidence of Codex.
+export function senderByDirectory({ names, here, codex, opencode, platform = process.platform }) {
+  const vendorUnknown = platform !== "win32" && names.every((n) => n === "");
+  if (names.includes("codex") || vendorUnknown) {
+    const sameDir = codex.filter((a) => a.cwd === here);
+    if (sameDir.length === 1) return sameDir[0];
+    if (sameDir.length > 1) {
+      throw new Error(
+        `${sameDir.length} Codex sessions run in this directory, so openmsg cannot tell which one sends. ` +
+          `Set OPENMSG_SELF, for example: OPENMSG_SELF=codex:${sameDir[0].name}`,
+      );
+    }
+  }
+  if (names.includes("opencode")) {
+    const sameDir = opencode.filter((a) => a.cwd === here);
+    if (sameDir.length === 1) return sameDir[0];
+  }
+  return null;
 }
 
 export async function self() {
@@ -499,7 +576,7 @@ export async function self() {
       );
     }
   }
-  const line = await ancestors(process.ppid);
+  const { line, names } = await parentLine(process.ppid);
   let [codex, opencode] = await Promise.all([codexAgents(), opencodeAgents()]);
   if (codex.length === 0) codex = codexAgentsFromFiles({ maxAgeMs: 6 * 3600 * 1000 });
 
@@ -512,34 +589,8 @@ export async function self() {
   // Codex runs a command in a separate process, and the session record stays
   // with the daemon. A Codex process in the parent line still shows the vendor,
   // and the working directory shows the session.
-  const names = await Promise.all(
-    line.map(async (pid) => {
-      try {
-        const { stdout } = await run("ps", ["-o", "comm=", "-p", String(pid)]);
-        return path.basename(stdout.trim());
-      } catch {
-        return "";
-      }
-    }),
-  );
-  const here = process.cwd();
-  // In a sandbox, `ps` can also give nothing. Then the working directory is the
-  // only evidence left, so openmsg uses it alone.
-  const vendorUnknown = names.every((n) => n === "");
-  if (names.includes("codex") || vendorUnknown) {
-    const sameDir = codex.filter((a) => a.cwd === here);
-    if (sameDir.length === 1) return sameDir[0];
-    if (sameDir.length > 1) {
-      throw new Error(
-        `${sameDir.length} Codex sessions run in this directory, so openmsg cannot tell which one sends. ` +
-          `Set OPENMSG_SELF, for example: OPENMSG_SELF=codex:${sameDir[0].name}`,
-      );
-    }
-  }
-  if (names.includes("opencode")) {
-    const sameDir = opencode.filter((a) => a.cwd === here);
-    if (sameDir.length === 1) return sameDir[0];
-  }
+  const found = senderByDirectory({ names, here: process.cwd(), codex, opencode });
+  if (found) return found;
 
   return { vendor: "shell", id: String(process.ppid), name: `shell-${process.ppid}` };
 }

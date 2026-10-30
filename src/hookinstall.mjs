@@ -9,15 +9,20 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { claudeConfigDirs } from "./registry.mjs";
 
 const HOME = os.homedir();
 const MARK = "openmsg";
 
-export const HOOK_TARGETS = [
-  { vendor: "claude", file: path.join(HOME, ".claude", "settings.json") },
-  { vendor: "cursor", file: path.join(HOME, ".cursor", "hooks.json") },
-  { vendor: "gemini", file: path.join(HOME, ".gemini", "hooks.json") },
-];
+// Each Claude config directory has its own settings, and a session reads only the
+// settings of its own directory.
+export function hookTargets(claudeDirs = claudeConfigDirs()) {
+  return [
+    ...claudeDirs.map((dir) => ({ vendor: "claude", file: path.join(dir, "settings.json") })),
+    { vendor: "cursor", file: path.join(HOME, ".cursor", "hooks.json") },
+    { vendor: "gemini", file: path.join(HOME, ".gemini", "hooks.json") },
+  ];
+}
 
 function readJson(file) {
   try {
@@ -76,9 +81,9 @@ export function withoutOurs(groups) {
     .filter((g) => g.hooks.length > 0);
 }
 
-export function installHooks(command) {
+export function installHooks(command, targets = hookTargets()) {
   const out = [];
-  for (const { vendor, file } of HOOK_TARGETS) {
+  for (const { vendor, file } of targets) {
     if (!fs.existsSync(path.dirname(file))) {
       out.push({ vendor, file, action: "skipped (agent not installed)" });
       continue;
@@ -98,9 +103,9 @@ export function installHooks(command) {
   return out;
 }
 
-export function uninstallHooks() {
+export function uninstallHooks(targets = hookTargets()) {
   const out = [];
-  for (const { vendor, file } of HOOK_TARGETS) {
+  for (const { vendor, file } of targets) {
     const config = readJson(file);
     if (!config?.hooks) continue;
     let touched = false;

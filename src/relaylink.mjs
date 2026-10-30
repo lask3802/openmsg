@@ -71,6 +71,15 @@ export async function open(url, handlers = {}) {
     if (!held.keep) waiting.delete(key);
     return true;
   };
+  let inbox = Promise.resolve();
+  // A fault in one frame ends that frame, and not the gateway.
+  const guarded = async (handler, frame) => {
+    try {
+      await handler?.(frame, link);
+    } catch (e) {
+      handlers.onError?.({ error: e.message }, link);
+    }
+  };
   const link = {
     url,
     connection,
@@ -103,9 +112,13 @@ export async function open(url, handlers = {}) {
     // The link goes to the handler. A frame can arrive before open() gives
     // the link back to its caller, and a handler that waits for that variable
     // sends nothing.
-    if (frame.type === "deliver") handlers.onDeliver?.(frame, link);
+    //
+    // Messages go one at a time, in the order of the relay. Two at once would
+    // both read the store before either one writes it, and the limits of the
+    // receiver would count neither one.
+    if (frame.type === "deliver") inbox = inbox.then(() => guarded(handlers.onDeliver, frame));
     else if (frame.type === "receipt") handlers.onReceipt?.(frame, link);
-    else if (frame.type === "routing-request") handlers.onRoutingRequest?.(frame, link);
+    else if (frame.type === "routing-request") guarded(handlers.onRoutingRequest, frame);
     else if (frame.type === "welcome") handlers.onWelcome?.(frame, link);
     else if (frame.type === "error") handlers.onError?.(frame, link);
   });

@@ -12,6 +12,7 @@ import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 import { canonical } from "./canonical.mjs";
+import { lockDown } from "./windows.mjs";
 
 export const VERSION = 2;
 
@@ -47,6 +48,7 @@ export function create({ label, force = false } = {}) {
   }
   fs.mkdirSync(p.dir, { recursive: true, mode: 0o700 });
   fs.chmodSync(p.dir, 0o700);
+  lockDown(p.dir);
   const signing = crypto.generateKeyPairSync("ed25519");
   const encryption = crypto.generateKeyPairSync("x25519");
   writePrivate(p.signing, signing.privateKey);

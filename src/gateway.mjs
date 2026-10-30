@@ -24,14 +24,15 @@ import * as permissions from "./permissions.mjs";
 import * as published from "./published.mjs";
 import * as inbound from "./inbound.mjs";
 import * as remote from "./remote.mjs";
-import { agentsOfVendor } from "./registry.mjs";
+import { agentsOfVendor, sessionById } from "./registry.mjs";
 import { deliverLocal } from "./deliver.mjs";
 import * as outbox from "./outbox.mjs";
 import * as relaylink from "./relaylink.mjs";
 import * as limits from "./limits.mjs";
 import * as device from "./device.mjs";
 import * as dirsync from "./dirsync.mjs";
-import { settings, saveSettings, endpointFor } from "./settings.mjs";
+import { settings, saveSettings, endpointFor, shareableEndpoint } from "./settings.mjs";
+import * as localrun from "./localrun.mjs";
 
 export const PATHS = {
   message: "/openmsg/v2/message",
@@ -45,7 +46,7 @@ export const REQUEST_WINDOW_MS = 120_000;
 
 // --- the address of this gateway -----------------------------------------
 
-export { settings, saveSettings, endpointFor };
+export { settings, saveSettings, endpointFor, shareableEndpoint };
 
 // --- signatures on a request and on an answer ------------------------------
 
@@ -84,18 +85,29 @@ async function liveAgents(vendor, { maxAgeMs = 5000 } = {}) {
   return rows;
 }
 
+// The look-up by id starts a process, and a member of the project can ask often.
+const sessionCache = new Map();
+async function liveSession(vendor, id, { maxAgeMs = 5000 } = {}) {
+  const found = (await liveAgents(vendor, { maxAgeMs })).find((a) => a.id === id);
+  if (found) return found;
+  const key = `${vendor}:${id}`;
+  const held = sessionCache.get(key);
+  if (held && Date.now() - held.at < maxAgeMs) return held.row;
+  const row = await sessionById(vendor, id);
+  sessionCache.set(key, { at: Date.now(), row });
+  return row;
+}
+
 // The two descriptions of section 9.4 of the spec. Presence is for a person,
 // and routing data is for a gateway. Neither one carries a working directory,
 // a socket path, or a token.
 export async function descriptions(projectId) {
   const rows = published.list(projectId);
-  const byVendor = new Map();
-  for (const vendor of new Set(rows.map((r) => r.vendor))) byVendor.set(vendor, await liveAgents(vendor));
   const presence = [];
   const routing = [];
   const me = identity.load();
   for (const row of rows) {
-    const agent = (byVendor.get(row.vendor) ?? []).find((a) => a.id === row.session);
+    const agent = await liveSession(row.vendor, row.session);
     presence.push({ alias: `${row.alias}@${me.label}`, vendor: row.vendor, status: agent?.status ?? "gone" });
     routing.push({
       alias: row.alias,
@@ -130,7 +142,7 @@ async function handleRouting(request) {
       label: me.label,
       project: projectId,
       at: new Date().toISOString(),
-      endpoint: settings().endpoint ?? null,
+      endpoint: shareableEndpoint(settings().endpoint),
       presence,
       routing,
     }),
@@ -254,7 +266,7 @@ export async function release(record, { deliver = deliverLocal, now = Date.now()
   if (record.target.epoch !== mine.epoch) {
     return stop("old-epoch", `the message names epoch ${record.target.epoch}, and the session runs epoch ${mine.epoch}`);
   }
-  const agent = (await liveAgents(mine.vendor, { maxAgeMs: 0 })).find((a) => a.id === record.target.session);
+  const agent = await liveSession(mine.vendor, record.target.session, { maxAgeMs: 0 });
   if (!agent) return stop("session-gone", "that session does not run now");
 
   let result;
@@ -269,6 +281,14 @@ export async function release(record, { deliver = deliverLocal, now = Date.now()
   inbound.put({ ...record, status, transport: result.transport });
   log(`${status} ${record.messageId} from ${record.from.label} to ${agent.vendor}:${agent.name}`);
   return { status, messageId: record.messageId, transport: result.transport };
+}
+
+// The reason goes to the sender. The detail of a failed adapter names a socket or
+// a path of this machine, so it stays in the store here.
+export function forPeer(out) {
+  if (out.reason !== "adapter-failed") return out;
+  const { detail, ...rest } = out;
+  return rest;
 }
 
 function readBody(req) {
@@ -289,7 +309,8 @@ function readBody(req) {
   });
 }
 
-export function serve({ port = 0, host = "127.0.0.1", deliver = deliverLocal, log = () => {} } = {}) {
+export function serve({ port = 0, host = "127.0.0.1", deliver = deliverLocal, log = () => {}, local = {} } = {}) {
+  localrun.ensureKey();
   const server = http.createServer(async (req, res) => {
     const send = (code, body) => {
       const text = JSON.stringify(body);
@@ -297,7 +318,7 @@ export function serve({ port = 0, host = "127.0.0.1", deliver = deliverLocal, lo
       res.end(text);
     };
     try {
-      if (req.method !== "POST" || !Object.values(PATHS).includes(req.url)) {
+      if (req.method !== "POST" || ![...Object.values(PATHS), localrun.LOCAL_PATH].includes(req.url)) {
         send(404, { error: "no such path" });
         return;
       }
@@ -307,6 +328,11 @@ export function serve({ port = 0, host = "127.0.0.1", deliver = deliverLocal, lo
         body = JSON.parse(raw);
       } catch {
         send(400, { error: "the body is not JSON" });
+        return;
+      }
+      if (req.url === localrun.LOCAL_PATH) {
+        const answer = await localrun.handle(req, body, local);
+        send(answer.code, answer.body);
         return;
       }
       if (req.url === PATHS.routing) {
@@ -320,13 +346,18 @@ export function serve({ port = 0, host = "127.0.0.1", deliver = deliverLocal, lo
         return;
       }
       const out = await receive(body, { deliver, log, via: "http" });
-      send(out.status === "refused" ? 403 : 200, out);
+      send(out.status === "refused" ? 403 : 200, forPeer(out));
     } catch (e) {
-      send(500, { error: e.message });
+      log(`a request failed: ${e.message}`);
+      send(500, { error: "the gateway could not do that" });
     }
   });
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    // A port that another program holds is an answer for the caller.
+    server.once("error", reject);
     server.listen(port, host, () => {
+      server.off("error", reject);
+      server.on("error", (e) => log(`the server failed: ${e.message}`));
       const real = server.address().port;
       resolve({
         server,
