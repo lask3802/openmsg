@@ -400,8 +400,17 @@ Rules:
 10. A published session of Codex on native Windows goes by its thread id, at any
     age. The list of threads there holds only the threads of the last 12 hours.
 11. The text that the receiving agent reads carries a command to answer. The
-    sender chooses the names in that command, so the implementation replaces each
-    character that could end the quoted address.
+    sender chooses the alias in that command, so the implementation replaces each
+    character that could end the quoted address. A changed name can reach nobody,
+    so these rules apply:
+    - The command names the verified owner id, and not the label.
+    - The command carries `--reply-to`. The session id stays out of the text,
+      because section 9.4 gives routing data to a gateway.
+    - A reply goes to the session id and the project of the message that it answers.
+      The alias in the address does not choose the session.
+    - If that session is not published now, the implementation must refuse the
+      reply. The agent writes a new message. A reply never reaches a session that
+      took the name later.
 
 ## 10. Relation to A2A
 

@@ -24,6 +24,8 @@ NAMESERVER=${NAMESERVER:-1.1.1.1}
 PREFIX=${PREFIX:-24}
 
 # A run that fails leaves no half-built container, so the same id works again.
+# Only a container that this run made goes away. When `pct create` fails, the id
+# can belong to another operator.
 built=
 remove_failed() {
   code=$?
@@ -44,7 +46,6 @@ if ping -c 1 -W 1 "$ADDRESS" >/dev/null 2>&1; then
   exit 1
 fi
 
-built=yes
 pct create "$VMID" "$TEMPLATE" \
   --hostname "$HOST_NAME" \
   --unprivileged 1 --features nesting=1 --onboot 1 \
@@ -52,6 +53,7 @@ pct create "$VMID" "$TEMPLATE" \
   --rootfs "$STORAGE:4" \
   --net0 "name=eth0,bridge=$BRIDGE,ip=$ADDRESS/$PREFIX,gw=$GATEWAY,type=veth" \
   --nameserver "$NAMESERVER"
+built=yes
 pct start "$VMID"
 
 # The network of a new container needs a moment.

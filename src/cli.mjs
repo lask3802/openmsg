@@ -346,7 +346,12 @@ function memberOf(project, query) {
 
 async function cmdSendRemote(target, text, replyTo, args) {
   const [alias, ownerName] = [target.slice(0, target.lastIndexOf("@")), target.slice(target.lastIndexOf("@") + 1)];
-  const project = projectId(args);
+  // A reply keeps the conversation of the message that it answers. That
+  // message is in the store of messages that arrived from other people.
+  const answered = replyTo ? inbound.findByPrefix(replyTo) : null;
+  if (replyTo && !answered) throw new Error(`no message ${replyTo} arrived from another person`);
+  if (answered) mustBeOwnMessage(answered);
+  const project = answered?.project ?? projectId(args);
   const member = memberOf(project, ownerName);
   const me = identity.load();
   // A sandbox reaches the gateway for one reason: to write to another person. The
@@ -354,12 +359,6 @@ async function cmdSendRemote(target, text, replyTo, args) {
   if (process.env.OPENMSG_LOCAL && member.ownerId === me.ownerId) {
     throw new Error("this path sends only to another person");
   }
-
-  // A reply keeps the conversation of the message that it answers. That
-  // message is in the store of messages that arrived from other people.
-  const answered = replyTo ? inbound.findByPrefix(replyTo) : null;
-  if (replyTo && !answered) throw new Error(`no message ${replyTo} arrived from another person`);
-  if (answered) mustBeOwnMessage(answered);
 
   // A member with a direct address takes the message over HTTP. A member with
   // no address takes it through the relay of the team.
@@ -410,7 +409,15 @@ async function cmdSendRemote(target, text, replyTo, args) {
     rows = cached.rows;
   }
 
-  const row = rows.find((r) => r.alias === alias || r.name === alias || r.session === alias);
+  // A name can move to another session. A reply therefore goes to the session id
+  // of the message that it answers, and never to a session that took the name
+  // later. The address of a frame can hold a changed name, and this needs no name.
+  const pinned = answered?.message?.openmsg?.from?.id ?? null;
+  const row = rows.find((r) => (pinned ? r.session === pinned : r.alias === alias || r.name === alias || r.session === alias));
+  if (!row && pinned) {
+    link?.close();
+    throw new Error(`the session that sent ${replyTo} is gone, so the reply has no target. Send a new message instead of a reply.`);
+  }
   if (!row) {
     link?.close();
     const names = rows.map((r) => `${r.alias}@${label}`).join(", ") || "nothing";
@@ -458,7 +465,7 @@ async function cmdSendRemote(target, text, replyTo, args) {
     link ??= await openLink();
     // The sender keeps its copy until a receipt arrives. The relay keeps its
     // own copy at the same time.
-    outbox.put({ messageId: message.messageId, to: member.ownerId, project, alias: `${alias}@${label}`, wire, state: "sending" });
+    outbox.put({ messageId: message.messageId, to: member.ownerId, project, alias: `${row.alias}@${label}`, wire, state: "sending" });
     const answer = await link.send(wire);
     if (answer.type !== "stored") {
       outbox.setState(message.messageId, "refused", { reason: answer.reason });
@@ -710,16 +717,8 @@ async function cmdGateway(args) {
   // Only a start that holds the port takes this file away. A start that fails
   // must not eat a stop for the gateway that runs.
   fs.rmSync(stopFile, { force: true });
-  const relayUrl = flag(rest, "relay") ?? gateway.settings().relay ?? null;
-  gateway.saveSettings({ host, port: running.port, endpoint: running.url });
-  if (relayUrl) {
-    gateway.saveSettings({ relay: relayUrl });
-    await gateway.joinRelay(relayUrl, { log: stamp });
-  }
-  stamp(`gateway of ${me.label} (${me.ownerId}) listens on ${running.url}`);
-  const rows = published.list();
-  if (rows.length === 0) stamp("nothing is published. Run: openmsg publish <agent>");
-  for (const r of rows) stamp(`published ${r.alias} · project ${r.project} · epoch ${r.epoch}${holdNote(r)}`);
+  // A relay that takes the connection and never answers holds the first join. The
+  // port is open by then, so a stop must work before that wait starts.
   let stopping = false;
   const stop = () => {
     if (stopping) return;
@@ -734,6 +733,17 @@ async function cmdGateway(args) {
   setInterval(() => {
     if (fs.existsSync(stopFile)) stop();
   }, 1000).unref();
+  const relayUrl = flag(rest, "relay") ?? gateway.settings().relay ?? null;
+  gateway.saveSettings({ host, port: running.port, endpoint: running.url });
+  if (relayUrl) {
+    gateway.saveSettings({ relay: relayUrl });
+    await gateway.joinRelay(relayUrl, { log: stamp });
+    if (stopping) return;
+  }
+  stamp(`gateway of ${me.label} (${me.ownerId}) listens on ${running.url}`);
+  const rows = published.list();
+  if (rows.length === 0) stamp("nothing is published. Run: openmsg publish <agent>");
+  for (const r of rows) stamp(`published ${r.alias} · project ${r.project} · epoch ${r.epoch}${holdNote(r)}`);
 }
 
 function holdNote(row) {

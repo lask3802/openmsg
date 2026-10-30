@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = path.dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
@@ -215,4 +215,66 @@ test("a session that restarts takes a new epoch, and the old address stops", asy
   const out = await letterTo({ session: "conv-bob-live", epoch: 1 }, "for the session that ended");
   assert.equal(out.status, "refused");
   assert.equal(out.reason, "not-published");
+});
+
+// This test stays last. It gives Alice a second project and changes a label.
+test("the command in a frame reaches the session that wrote, and no other", async () => {
+  // A valid name and a valid label. A command cannot carry either one as it is.
+  const writer = { vendor: "cursor", id: "conv-writer-1", name: "work (test)-abcd" };
+  // This name is the changed name of the writer, so a search by name finds this one.
+  const namesake = { vendor: "cursor", id: "conv-namesake", name: "work _test_-abcd" };
+  const asker = { vendor: "cursor", id: "conv-asker", name: "asker" };
+  as(BOB, () => {
+    for (const session of [writer, namesake]) {
+      register({ ...session, cwd: "/work/web-app" });
+      published.publish(PROJECT, session);
+    }
+  });
+  as(ALICE, () => {
+    register({ ...asker, cwd: "/work/web-app" });
+    published.publish(PROJECT, asker);
+    permissions.set(PROJECT, bob.ownerId, "accept");
+    const file = path.join(ALICE, "directory.json");
+    fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace(/"label":\s*"bob"/g, '"label": "bob+dev"'));
+    invite.create({ label: "second-project" });
+  });
+
+  const wire = as(BOB, () => remote.pack(
+    remote.createRemote({
+      from: { owner: bob.ownerId, vendor: writer.vendor, id: writer.id, name: writer.name },
+      project: { id: PROJECT, label: "web-app" },
+      target: { owner: alice.ownerId, project: PROJECT, session: asker.id, epoch: 1 },
+      text: "a question",
+    }),
+    { recipient: directory.member(PROJECT, alice.ownerId) },
+  ));
+  let frame = null;
+  const deliver = async (agent, message, { text }) => {
+    frame = text;
+    return { delivered: true, transport: "stub" };
+  };
+  assert.equal((await asAsync(ALICE, () => gateway.receive(wire, { deliver }))).status, "adapter-accepted");
+  assert.ok(!frame.includes(writer.id), "the session id is routing data");
+  const [, target, id] = frame.match(/To answer: openmsg send "([^"]+)" "<your answer>" --reply-to (\S+)/);
+  assert.ok(target.endsWith(`@${bob.ownerId}`), target);
+
+  const answer = () => spawnSync(process.execPath, [path.join(ROOT, "src/cli.mjs"), "send", target, "the answer", "--reply-to", id], {
+    env: { ...process.env, OPENMSG_HOME: ALICE, OPENMSG_SELF: "cursor:asker" },
+    encoding: "utf8",
+  });
+  const first = answer();
+  assert.equal(first.status, 0, first.stderr);
+  assert.equal(stubLines().at(-1).agent, writer.id);
+
+  // The writer restarts, and a new session takes its name.
+  const next = { ...writer, id: "conv-writer-2" };
+  as(BOB, () => {
+    register({ ...next, cwd: "/work/web-app" });
+    published.publish(PROJECT, next);
+  });
+  const before = stubLines().length;
+  const second = answer();
+  assert.notEqual(second.status, 0);
+  assert.match(second.stderr, /is gone/);
+  assert.equal(stubLines().length, before);
 });

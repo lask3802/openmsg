@@ -638,14 +638,41 @@ test("the frame gives no quote of the sender to the command that it shows", () =
     message: {
       messageId: "12345678-0000-0000-0000-000000000000",
       parts: [{ text: "hello" }],
-      openmsg: { from: { vendor: "claude", name: hostile }, project: { label: "p" }, workspace: { branch: 'b"$(calc)' } },
+      openmsg: { from: { vendor: "claude", id: hostile, name: hostile }, project: { label: "p" }, workspace: { branch: 'b"$(calc)' } },
     },
-    verified: { label: "bob", project: "p" },
+    verified: { owner: "o_12345678", label: hostile, project: "p" },
   });
   const frame = compose(parts);
   const line = frame.split("\n").find((l) => l.startsWith("To answer:"));
   assert.equal(line.split('"').length, 5, line);
+  assert.ok(line.includes("@o_12345678"), line);
   assert.ok(!frame.includes("$(calc)"));
+});
+
+test("a stop works while the first join waits for a silent relay", WINDOWS_ONLY, async (t) => {
+  const net = await import("node:net");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "openmsg-win-join-"));
+  const held = new Set();
+  const relay = net.createServer((socket) => {
+    held.add(socket);
+    socket.on("error", () => {});
+  });
+  await new Promise((resolve) => relay.listen(0, "127.0.0.1", resolve));
+  const env = { ...process.env, OPENMSG_HOME: home };
+  assert.equal(spawnSync(process.execPath, [CLI, "id", "create", "--label", "w"], { env }).status, 0);
+  const asked = new Promise((resolve) => relay.once("connection", resolve));
+  const child = spawn(process.execPath, [CLI, "gateway", "start", "--port", "0", "--relay", `ws://127.0.0.1:${relay.address().port}`], { env, stdio: "ignore" });
+  const gone = new Promise((resolve) => child.once("exit", resolve));
+  t.after(() => {
+    child.kill();
+    for (const socket of held) socket.destroy();
+    relay.close();
+    fs.rmSync(home, { recursive: true, force: true, maxRetries: 5 });
+  });
+  await asked;
+  const r = spawnSync(process.execPath, [CLI, "gateway", "stop"], { env, encoding: "utf8" });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(await Promise.race([gone, new Promise((res) => setTimeout(res, 5000, "still runs").unref())]), 0);
 });
 
 test("the reason of a failed adapter goes to the sender, and its detail stays here", () => {
