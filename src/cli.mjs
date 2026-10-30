@@ -344,6 +344,19 @@ function memberOf(project, query) {
   return matches[0];
 }
 
+// The session that wrote a message, from the signed fields of that message. The
+// key of its delegation names the machine, and a routing row names a machine by
+// the same key. A message with no delegation came from the machine that holds
+// the owner key, and a row of that machine holds no key.
+function senderOf(answered, replyTo) {
+  const { from, delegation } = answered.message?.openmsg ?? {};
+  const named = (value) => typeof value === "string" && value.trim() !== "";
+  if (!named(from?.vendor) || !named(from?.id)) {
+    throw new Error(`the message ${replyTo} names no session of its sender, so the reply has no target. Send a new message instead of a reply.`);
+  }
+  return { owner: from.owner, vendor: from.vendor, id: from.id, machine: delegation?.keys?.encryption?.x ?? null };
+}
+
 async function cmdSendRemote(target, text, replyTo, args) {
   const [alias, ownerName] = [target.slice(0, target.lastIndexOf("@")), target.slice(target.lastIndexOf("@") + 1)];
   // A reply keeps the conversation of the message that it answers. That
@@ -351,8 +364,12 @@ async function cmdSendRemote(target, text, replyTo, args) {
   const answered = replyTo ? inbound.findByPrefix(replyTo) : null;
   if (replyTo && !answered) throw new Error(`no message ${replyTo} arrived from another person`);
   if (answered) mustBeOwnMessage(answered);
+  const sender = answered ? senderOf(answered, replyTo) : null;
   const project = answered?.project ?? projectId(args);
   const member = memberOf(project, ownerName);
+  if (sender && member.ownerId !== sender.owner) {
+    throw new Error(`the message ${replyTo} came from ${sender.owner}, so a reply cannot go to ${member.ownerId}`);
+  }
   const me = identity.load();
   // A sandbox reaches the gateway for one reason: to write to another person. The
   // own owner name would lead back to a session on this machine.
@@ -409,12 +426,17 @@ async function cmdSendRemote(target, text, replyTo, args) {
     rows = cached.rows;
   }
 
-  // A name can move to another session. A reply therefore goes to the session id
-  // of the message that it answers, and never to a session that took the name
-  // later. The address of a frame can hold a changed name, and this needs no name.
-  const pinned = answered?.message?.openmsg?.from?.id ?? null;
-  const row = rows.find((r) => (pinned ? r.session === pinned : r.alias === alias || r.name === alias || r.session === alias));
-  if (!row && pinned) {
+  // A name can move to another session, and one session id can exist under two
+  // vendors or on two machines. A reply therefore goes to the vendor, the session
+  // id, and the machine of the message that it answers, and never to a session
+  // that took the name later. The address of a frame can hold a changed name,
+  // and this needs no name.
+  const row = rows.find((r) =>
+    sender
+      ? r.vendor === sender.vendor && r.session === sender.id && (r.sealTo?.x ?? null) === sender.machine
+      : r.alias === alias || r.name === alias || r.session === alias,
+  );
+  if (!row && sender) {
     link?.close();
     throw new Error(`the session that sent ${replyTo} is gone, so the reply has no target. Send a new message instead of a reply.`);
   }
@@ -868,7 +890,7 @@ async function cmdAccept(args) {
   if (!row) throw new Error(`no message ${id}. Run: openmsg held`);
   if (row.status !== "held") throw new Error(`message ${id} is "${row.status}", and only a held message is accepted`);
   // A refusal has no way back, so this must come before the release.
-  const mine = published.find(row.project, { session: row.target.session });
+  const mine = gateway.publishedTarget(row);
   if (mine && !published.reachable(mine)) {
     throw new Error(`${mine.alias} has no yes for the hold gate. Run: openmsg publish ${mine.alias} --skip-hold-gate`);
   }

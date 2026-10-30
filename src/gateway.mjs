@@ -248,6 +248,17 @@ export async function receive(wire, { deliver = deliverLocal, now = Date.now(), 
   return release(record, { deliver, now, log });
 }
 
+// The target holds a session id and no vendor. The signed `to` names the vendor,
+// because the same vendor and the same id make the same session.
+export function publishedTarget(record) {
+  const { project, target } = record;
+  const vendor = record.message?.openmsg?.to?.vendor;
+  if (vendor) return published.find(project, { session: target.session, vendor });
+  // A message that names no vendor can go only where one vendor holds that id.
+  const rows = published.list(project).filter((r) => r.session === target.session);
+  return new Set(rows.map((r) => r.vendor)).size === 1 ? rows[0] : null;
+}
+
 // The last step. The gateway checks the rules again here, because a queue and
 // a held message both delay a message after the first check.
 export async function release(record, { deliver = deliverLocal, now = Date.now(), log = () => {} } = {}) {
@@ -261,7 +272,7 @@ export async function release(record, { deliver = deliverLocal, now = Date.now()
   }
   if (!(Date.parse(record.expiresAt) > now)) return stop("expired", `the deadline passed at ${record.expiresAt}`);
 
-  const mine = published.find(record.project, { session: record.target.session });
+  const mine = publishedTarget(record);
   if (!mine || !published.reachable(mine)) return stop("not-published", "that session is not published in this project");
   if (record.target.epoch !== mine.epoch) {
     return stop("old-epoch", `the message names epoch ${record.target.epoch}, and the session runs epoch ${mine.epoch}`);

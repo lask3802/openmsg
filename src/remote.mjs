@@ -321,8 +321,9 @@ export function layoutOf({ message, verified }) {
   const plain = (value) => String(value).replace(/[^\p{L}\p{N} ._:/@-]/gu, "_");
   const who = plain(`${o.from.vendor}:${o.from.name ?? o.from.id}@${verified.label}`);
   // A changed label reaches nobody, so the command names the verified owner id. A
-  // changed alias does no harm there: --reply-to chooses the session, by its id. The
-  // id itself stays out of this text, because only a gateway reads routing data.
+  // changed alias does no harm there: --reply-to chooses the session, by its vendor,
+  // its id, and its machine. The id itself stays out of this text, because only a
+  // gateway reads routing data.
   const answerTo = `${plain(`${o.from.vendor}:${o.from.name ?? o.from.id}`)}@${verified.owner}`;
   const id = shortId(message.messageId);
   const device = verified.device ? [["Device", plain(verified.deviceLabel ?? verified.device)]] : [];

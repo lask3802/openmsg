@@ -42,8 +42,10 @@ target:   { owner: <owner id>, project: <project id>, session: <session id>, epo
 Rules:
 
 1. A sender resolves an alias to a target before it sends.
-2. Delivery uses the target only. An alias that moved to another session must
-   never receive the message.
+2. Delivery uses the target and the vendor in `to`. The target holds no vendor,
+   and one session id can exist under two vendors. A message with no vendor in
+   `to` reaches a session only if one vendor alone holds that session id. An alias
+   that moved to another session must never receive the message.
 3. The epoch changes when a session restarts. A message for an old epoch is
    refused, not delivered.
 4. A gateway publishes presence to a person, and signed routing data to an
@@ -146,9 +148,10 @@ Rules:
     message acknowledges it, and the relay forgets it.
 15. A question about routing goes to every machine of that owner, and each
     one answers for the sessions that it publishes. The sender verifies each
-    answer on its own and joins the lists. Each row carries the encryption
-    key of the machine that answered, and a message for a session is sealed
-    for that machine.
+    answer on its own and joins the lists. A row of a machine with a delegation
+    carries the encryption key of that machine, and a message for a session is
+    sealed for that machine. A row of the machine that holds the owner key
+    carries no key, and a message for that session is sealed for the owner key.
 16. A receipt goes to every machine of the owner that sent, because the relay
     does not know which machine sent. A receipt for an owner that is offline
     waits until it is old, and every machine that connects reads it. A
@@ -171,7 +174,7 @@ Rules:
 ## 5. Authentication of a message
 
 1. The sender signs a canonical form of the envelope. The signature covers
-   every field that carries meaning: the version, `from`, the project, the
+   every field that carries meaning: the version, `from`, `to`, the project, the
    target, `messageId`, `contextId`, `replyTo`, `createdAt`, the expiry,
    `hops`, `workspace`, and the parts. It excludes the signature itself and the
    receipt data that a receiver adds locally.
@@ -357,8 +360,8 @@ Rules:
 4. A published session has two descriptions, and they are not the same thing:
    - **Presence**, which a person reads: the alias and the status.
    - **Routing data**, which a gateway reads: the owner id, the project id, the
-     session id, the epoch, and the endpoint. It is signed, and an authorized
-     peer alone receives it.
+     vendor, the session id, the epoch, and the endpoint. It is signed, and an
+     authorized peer alone receives it.
 5. Neither description carries the working directory, a socket path, a token, or
    a raw repository URL.
 6. A gateway asks for routing data with a signed request. The request names the
@@ -406,8 +409,17 @@ Rules:
     - The command names the verified owner id, and not the label.
     - The command carries `--reply-to`. The session id stays out of the text,
       because section 9.4 gives routing data to a gateway.
-    - A reply goes to the session id and the project of the message that it answers.
-      The alias in the address does not choose the session.
+    - A reply goes to the owner, the project, the vendor, and the session id of the
+      message that it answers. One session id can exist under two vendors, or on
+      two machines. The alias in the address does not choose the session.
+    - A reply also goes to the machine that wrote the message. A delegation in the
+      message gives the encryption key of that machine, and a routing row of that
+      machine holds the same key. With no delegation, the message came from the
+      machine that holds the owner key, and a routing row of that machine holds
+      no key.
+    - If the message names no vendor or no session id, the implementation must
+      refuse the reply. It does not use the alias instead.
+    - If an address names another owner, the implementation must refuse the reply.
     - If that session is not published now, the implementation must refuse the
       reply. The agent writes a new message. A reply never reaches a session that
       took the name later.

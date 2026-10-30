@@ -379,7 +379,8 @@ export async function agentsOfVendor(vendor) {
     const live = await codexAgents();
     return live.length > 0 ? live : codexAgentsFromFiles();
   }
-  return registered();
+  // The registry holds every vendor that reports itself from a hook.
+  return registered().filter((a) => a.vendor === vendor);
 }
 
 export async function findSession(vendor, id) {

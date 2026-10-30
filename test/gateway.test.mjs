@@ -64,7 +64,7 @@ fs.writeFileSync(
      port: 0,
      host: "127.0.0.1",
      deliver: async (agent, message, { text }) => {
-       fs.appendFileSync(process.env.STUB_OUT, JSON.stringify({ agent: agent.id, text }) + "\\n");
+       fs.appendFileSync(process.env.STUB_OUT, JSON.stringify({ agent: agent.id, vendor: agent.vendor, text }) + "\\n");
        return { delivered: true, transport: "stub" };
      },
    });
@@ -277,4 +277,110 @@ test("the command in a frame reaches the session that wrote, and no other", asyn
   assert.notEqual(second.status, 0);
   assert.match(second.stderr, /is gone/);
   assert.equal(stubLines().length, before);
+});
+
+// A message of Bob reaches the session of Alice from the test above, and this
+// gives the command in the frame that her agent reads.
+async function frameFrom(from) {
+  const wire = as(BOB, () => remote.pack(
+    remote.createRemote({
+      from: { owner: bob.ownerId, ...from },
+      project: { id: PROJECT, label: "web-app" },
+      target: { owner: alice.ownerId, project: PROJECT, session: "conv-asker", epoch: 1 },
+      text: "a question",
+    }),
+    { recipient: directory.member(PROJECT, alice.ownerId) },
+  ));
+  let frame = null;
+  const deliver = async (agent, message, { text }) => {
+    frame = text;
+    return { delivered: true, transport: "stub" };
+  };
+  assert.equal((await asAsync(ALICE, () => gateway.receive(wire, { deliver }))).status, "adapter-accepted");
+  const [, target, id] = frame.match(/To answer: openmsg send "([^"]+)" "<your answer>" --reply-to (\S+)/);
+  return { wire, target, id };
+}
+
+const answerFrame = ({ target, id }) => spawnSync(process.execPath, [path.join(ROOT, "src/cli.mjs"), "send", target, "the answer", "--reply-to", id], {
+  env: { ...process.env, OPENMSG_HOME: ALICE, OPENMSG_SELF: "cursor:asker" },
+  encoding: "utf8",
+});
+
+test("one session id under two vendors: a reply reaches the vendor that wrote", async () => {
+  // The first row holds the other vendor, so a search by id alone finds that one.
+  const other = { vendor: "gemini", id: "shared", name: "other" };
+  const writer = { vendor: "cursor", id: "shared", name: "writer" };
+  as(BOB, () => {
+    for (const session of [other, writer]) {
+      register({ ...session, cwd: "/work/web-app" });
+      published.publish(PROJECT, session);
+    }
+  });
+  // Each direction: the row of one vendor comes first, and the registry of the
+  // sessions that report from a hook gives the other one first.
+  for (const session of [writer, other]) {
+    const out = answerFrame(await frameFrom(session));
+    assert.equal(out.status, 0, out.stderr);
+    const { agent, vendor } = stubLines().at(-1);
+    assert.deepEqual({ agent, vendor }, { agent: "shared", vendor: session.vendor });
+  }
+});
+
+test("a reply to a message with no session of its sender is refused, and no alias takes it", async () => {
+  const senders = [
+    // With no usable id, this name gives the address of the namesake from the test above.
+    { vendor: "cursor", name: "work (test)-abcd" },
+    { vendor: "cursor", id: "", name: "work (test)-abcd" },
+    { vendor: "cursor", id: "   ", name: "work (test)-abcd" },
+    // An id with no vendor names no session.
+    { id: "conv-namesake", name: "work (test)-abcd" },
+  ];
+  for (const from of senders) {
+    const command = await frameFrom(from);
+    const before = stubLines().length;
+    const out = answerFrame(command);
+    assert.notEqual(out.status, 0, JSON.stringify(from));
+    assert.match(out.stderr, /names no session of its sender/);
+    assert.equal(stubLines().length, before, JSON.stringify(from));
+  }
+});
+
+test("a reply cannot go to another owner under the same session id", async () => {
+  const { id } = await frameFrom({ vendor: "cursor", id: "shared", name: "writer" });
+  const out = answerFrame({ target: `cursor:writer@${alice.ownerId}`, id });
+  assert.notEqual(out.status, 0);
+  assert.match(out.stderr, new RegExp(`came from ${bob.ownerId}`));
+});
+
+test("a copy that does not open changes nobody who can take a reply", async () => {
+  const command = await frameFrom({ vendor: "cursor", id: "shared", name: "writer" });
+  // The same wire arrives after its deadline, and the store writes that fact.
+  const late = await asAsync(ALICE, () => gateway.receive(command.wire, { now: Date.now() + 400 * 86_400_000 }));
+  assert.equal(late.status, "refused");
+  const out = answerFrame(command);
+  assert.equal(out.status, 0, out.stderr);
+  assert.equal(stubLines().at(-1).vendor, "cursor");
+});
+
+test("with no vendor in the message, two vendors under one id take nothing", async () => {
+  for (const to of [null, { owner: bob.ownerId, vendor: "", id: "shared" }]) {
+    const wire = as(ALICE, () => remote.pack(
+      remote.createRemote({
+        from: { owner: alice.ownerId, vendor: "cursor", id: "conv-asker", name: "asker" },
+        to,
+        project: { id: PROJECT, label: "web-app" },
+        target: { owner: bob.ownerId, project: PROJECT, session: "shared", epoch: 1 },
+        text: "for which vendor",
+      }),
+      { recipient: directory.member(PROJECT, bob.ownerId) },
+    ));
+    let reached = false;
+    const deliver = async () => {
+      reached = true;
+      return { delivered: true, transport: "stub" };
+    };
+    const out = await asAsync(BOB, () => gateway.receive(wire, { deliver }));
+    assert.equal(out.reason, "not-published", JSON.stringify(out));
+    assert.equal(reached, false, JSON.stringify(to));
+  }
 });

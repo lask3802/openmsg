@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = path.dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
@@ -151,6 +151,8 @@ await desk.ready;
 const lap = startMachine(LAPTOP, "laptop");
 await lap.ready;
 await sleep(500);
+// The laptop after it comes back.
+let again = null;
 
 test("both machines of one owner hold a connection at the same time", async () => {
   // The laptop learned the project from the relay, and it published its own
@@ -212,10 +214,83 @@ test("a message for a machine that is offline waits, and no other machine eats i
   assert.equal(desk.reads().length, 1, "the desk read nothing new");
   assert.equal(relay.queued(bob.ownerId).length, 1, "the message waits for the laptop");
 
-  const again = startMachine(LAPTOP, "laptop2");
+  again = startMachine(LAPTOP, "laptop2");
   await again.ready;
   await sleep(800);
   assert.equal(again.reads().length, 1, "the laptop took it when it came back");
   assert.match(again.reads()[0], /the laptop was away/);
   assert.equal(relay.queued(bob.ownerId).length, 0);
+});
+
+test("one session id on two machines: a reply goes to the machine that wrote", async () => {
+  const ASKER = { vendor: "cursor", id: "conv-asker", name: "asker" };
+  as(ALICE, () => {
+    register({ ...ASKER, cwd: "/work" });
+    published.publish(PROJECT, ASKER);
+    permissions.set(PROJECT, bob.ownerId, "accept");
+  });
+  // The vendor and the id are the same, so only the machine tells them apart.
+  const twin = (name) => ({ vendor: "cursor", id: "twin", name });
+  for (const [home, name] of [[DESK, "twin-desk"], [LAPTOP, "twin-laptop"]]) {
+    as(home, () => {
+      register({ ...twin(name), cwd: "/work" });
+      published.publish(PROJECT, twin(name));
+    });
+  }
+  const frameFrom = async (home, name) => {
+    const wire = as(home, () => remote.pack(
+      remote.createRemote({
+        from: { owner: bob.ownerId, ...twin(name) },
+        project: { id: PROJECT, label: "web-app" },
+        target: { owner: alice.ownerId, project: PROJECT, session: ASKER.id, epoch: 1 },
+        text: "a question",
+      }),
+      { recipient: directory.member(PROJECT, alice.ownerId) },
+    ));
+    let frame = null;
+    const deliver = async (agent, message, { text }) => {
+      frame = text;
+      return { delivered: true, transport: "stub" };
+    };
+    assert.equal((await asAsync(ALICE, () => gateway.receive(wire, { deliver }))).status, "adapter-accepted");
+    return frame.match(/To answer: openmsg send "([^"]+)" "<your answer>" --reply-to (\S+)/).slice(1);
+  };
+  // The relay runs in this process, so the command cannot block it.
+  const answer = ([target, id], text) => new Promise((resolve) => {
+    execFile(
+      process.execPath,
+      [path.join(ROOT, "src/cli.mjs"), "send", target, text, "--reply-to", id],
+      { env: { ...process.env, OPENMSG_HOME: ALICE, OPENMSG_SELF: "cursor:asker" } },
+      (error, stdout, stderr) => resolve({ failed: Boolean(error), stderr }),
+    );
+  });
+
+  const deskFrame = await frameFrom(DESK, "twin-desk");
+  const fromDesk = await answer(deskFrame, "for the twin on the desk");
+  assert.equal(fromDesk.failed, false, fromDesk.stderr);
+  const laptopFrame = await frameFrom(LAPTOP, "twin-laptop");
+  const fromLaptop = await answer(laptopFrame, "for the twin on the laptop");
+  assert.equal(fromLaptop.failed, false, fromLaptop.stderr);
+  await sleep(800);
+  const said = (machine, text) => machine.reads().some((line) => line.includes(text));
+  assert.ok(said(desk, "for the twin on the desk"), "the desk read its reply");
+  assert.ok(!said(again, "for the twin on the desk"), "the laptop did not read the reply of the desk");
+  assert.ok(said(again, "for the twin on the laptop"), "the laptop read its reply");
+  assert.ok(!said(desk, "for the twin on the laptop"), "the desk did not read the reply of the laptop");
+
+  // The machine that wrote stops publishing. The twin on the other machine holds
+  // the vendor and the id, and it still takes no reply. This holds in each
+  // direction: the laptop signs with its own key, and the desk with the owner key.
+  as(LAPTOP, () => published.unpublish(PROJECT, "cursor:twin-laptop"));
+  const noLaptop = await answer(laptopFrame, "for nobody on the laptop");
+  assert.equal(noLaptop.failed, true);
+  assert.match(noLaptop.stderr, /is gone/);
+  as(LAPTOP, () => published.publish(PROJECT, twin("twin-laptop")));
+  as(DESK, () => published.unpublish(PROJECT, "cursor:twin-desk"));
+  const noDesk = await answer(deskFrame, "for nobody on the desk");
+  assert.equal(noDesk.failed, true);
+  assert.match(noDesk.stderr, /is gone/);
+  await sleep(300);
+  assert.ok(!said(desk, "for nobody"), "the desk read nothing new");
+  assert.ok(!said(again, "for nobody"), "the laptop read nothing new");
 });

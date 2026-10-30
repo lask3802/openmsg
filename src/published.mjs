@@ -96,6 +96,11 @@ export function list(projectId = null) {
   return out;
 }
 
-export function find(projectId, { alias = null, session = null }) {
-  return list(projectId).find((r) => (alias ? r.alias === alias : true) && (session ? r.session === session : true)) ?? null;
+// One session id can exist under two vendors, so `vendor` narrows the search.
+export function find(projectId, { alias = null, session = null, vendor = null }) {
+  return (
+    list(projectId).find(
+      (r) => (alias ? r.alias === alias : true) && (session ? r.session === session : true) && (vendor ? r.vendor === vendor : true),
+    ) ?? null
+  );
 }

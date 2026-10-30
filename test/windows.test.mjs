@@ -632,6 +632,34 @@ test("accept keeps a held message for a row with no yes", WINDOWS_ONLY, (t) => {
   assert.equal(JSON.parse(last).status, "held");
 });
 
+test("accept reads the row of the vendor that the message names", WINDOWS_ONLY, (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "openmsg-win-held-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const row = {
+    messageId: "33333333-0000-0000-0000-000000000000",
+    project: "p",
+    from: { owner: "o_x", label: "x" },
+    target: { session: "same-id", epoch: 1 },
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    status: "held",
+    message: { openmsg: { to: { vendor: "cursor" } } },
+  };
+  fs.writeFileSync(path.join(home, "inbound.jsonl"), JSON.stringify(row) + "\n");
+  // The first row holds no yes, and it is the row of another vendor.
+  fs.writeFileSync(path.join(home, "published.json"), JSON.stringify({
+    version: 2,
+    projects: {
+      p: {
+        "claude:held": { alias: "claude:held", vendor: "claude", name: "held", session: "same-id", epoch: 1 },
+        "cursor:held": { alias: "cursor:held", vendor: "cursor", name: "held", session: "same-id", epoch: 1 },
+      },
+    },
+  }));
+  const r = spawnSync(process.execPath, [CLI, "accept", "33333333"], { env: { ...process.env, OPENMSG_HOME: home }, encoding: "utf8" });
+  assert.doesNotMatch(r.stderr, /--skip-hold-gate/);
+  assert.match(r.stdout, /that session does not run now/, "the search found the row of cursor, and that session is not here");
+});
+
 test("the frame gives no quote of the sender to the command that it shows", () => {
   const hostile = 'x" && calc && echo "';
   const parts = layoutOf({
