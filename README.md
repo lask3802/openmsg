@@ -127,7 +127,7 @@ node src/cli.mjs list
 Node 22 or later. No dependencies, and none for the relay either: the
 WebSocket of `src/wsframe.mjs` is both sides of RFC 6455 in one small file.
 
-Run the tests with `node --test`. 183 of them, and they need no account:
+Run the tests with `node --test`. 187 of them, and they need no account:
 they run two gateways and a relay on this machine, as two people.
 
 An agent with no push entry point needs its hook. Claude Code needs its hook
@@ -151,10 +151,13 @@ discovery on Windows yet.
   The text goes over stdin, and never on a command line.
 - **The sandbox of Codex** blocks the local network and allows this machine. In a
   Codex session, `openmsg send <agent>@<owner>` and `openmsg ack` therefore ask the
-  gateway of the owner to run them. The gateway takes only those two commands, only
-  for another person, and only for the own messages of the session. That path is a
-  way out of the sandbox for text, so a session can tell a person that the owner
-  accepted what it can read. macOS and Linux do not use this path.
+  gateway of the owner to run them. The gateway takes only those two commands, and
+  only for another person. That path is a way out of the sandbox for text, so a
+  session can tell a person that the owner accepted what it can read. The sessions
+  of one user are not separate here: the gateway takes the id of a session from the
+  caller. So one session can acknowledge or answer as another session of that user,
+  and it can send in the name of any session. The signature proves the owner, and
+  not the session. macOS and Linux do not use this path.
 
 Start the gateway at each logon:
 

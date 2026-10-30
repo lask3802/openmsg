@@ -19,7 +19,7 @@ const rpc = await import("../src/adapters/codexrpc.mjs");
 const service = await import("../src/service.mjs");
 const { isUnder, senderByDirectory, sessionById } = await import("../src/registry.mjs");
 const { hookTargets, installHooks } = await import("../src/hookinstall.mjs");
-const { system32, lockDown, onPath } = await import("../src/windows.mjs");
+const { system32, lockDown, onPath, pathDirs } = await import("../src/windows.mjs");
 const { layoutOf, workspaceOf } = await import("../src/remote.mjs");
 const { compose } = await import("../src/envelope.mjs");
 const { forPeer } = await import("../src/gateway.mjs");
@@ -90,6 +90,23 @@ test("the own session uses the token of the environment", () => {
 });
 
 const WINDOWS_ONLY = { skip: process.platform === "win32" ? false : "for Windows" };
+
+// In a sandbox, Windows Script Host hangs with no error, and a test of the launcher
+// proves nothing there. It takes 300 ms on a normal machine, so a long wait tells
+// the two apart. It writes this file with `fs`, because a fault in the code under
+// test must fail a test, and not skip it.
+let scriptHost = null;
+function scriptHostRuns() {
+  if (scriptHost !== null) return scriptHost;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "openmsg-wsh-"));
+  const mark = path.join(dir, "ran.txt");
+  const script = path.join(dir, "probe.vbs");
+  fs.writeFileSync(script, `﻿CreateObject("Scripting.FileSystemObject").CreateTextFile("${mark}").Close\r\n`, "utf16le");
+  spawnSync(system32("wscript.exe"), ["//B", "//T:10", script], { stdio: "ignore", timeout: 15_000 });
+  scriptHost = fs.existsSync(mark);
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+  return scriptHost;
+}
 
 function hook(home, id, env) {
   return spawnSync(process.execPath, [CLI, "hook", "claude"], {
@@ -296,6 +313,52 @@ test("no Codex anywhere gives null", () => {
   assert.equal(rpc.resolveCodex({ PATH: path.join(HOME, "empty"), CODEX_HOME: path.join(HOME, "no-codex-home") }), null);
 });
 
+test("a relative entry of the PATH cannot give the Codex that runs", () => {
+  const checkout = fs.mkdtempSync(path.join(os.tmpdir(), "openmsg-win-checkout-"));
+  const before = process.cwd();
+  fs.writeFileSync(path.join(checkout, "codex.exe"), "");
+  fs.mkdirSync(path.join(checkout, "node_modules", "@openai", "codex", "bin"), { recursive: true });
+  fs.writeFileSync(path.join(checkout, "node_modules", "@openai", "codex", "bin", "codex.js"), "");
+  fs.mkdirSync(path.join(checkout, "bin"));
+  fs.writeFileSync(path.join(checkout, "bin", "codex.exe"), "");
+  fs.mkdirSync(path.join(checkout, "OpenAI", "Codex", "bin", "1"), { recursive: true });
+  fs.writeFileSync(path.join(checkout, "OpenAI", "Codex", "bin", "1", "codex.exe"), "");
+  fs.mkdirSync(path.join(checkout, "packages", "app-server-daemon", "current", "bin"), { recursive: true });
+  fs.writeFileSync(path.join(checkout, "packages", "app-server-daemon", "current", "bin", "codex.exe"), "");
+  const none = { CODEX_HOME: path.join(HOME, "no-codex-home") };
+  process.chdir(checkout);
+  try {
+    for (const PATH of [".", `.${path.delimiter}node_modules`, "bin", "node_modules/.."]) {
+      assert.equal(rpc.resolveCodex({ ...none, PATH }), null, `PATH=${PATH}`);
+    }
+    assert.equal(rpc.resolveCodex({ ...none, PATH: "", OPENMSG_CODEX_BIN: "codex.exe" }), null, "a bare name is not a full path");
+    assert.equal(rpc.resolveCodex({ ...none, PATH: "", LOCALAPPDATA: "." }), null, "the data directory of the app");
+    assert.equal(rpc.resolveCodex({ PATH: "", CODEX_HOME: "." }), null, "the home of Codex");
+    assert.equal(rpc.resolveCodex({ ...none, PATH: checkout }).command, path.join(checkout, "codex.exe"), "a full path still works");
+  } finally {
+    process.chdir(before);
+    fs.rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+test("a directory of the PATH needs a full root", WINDOWS_ONLY, () => {
+  const dirs = pathDirs({ PATH: ["C:\\tools", ".", "bin", "\\on-this-drive", "C:relative", "\\\\host\\share\\bin"].join(";") });
+  assert.deepEqual(dirs, ["C:\\tools", "\\\\host\\share\\bin"]);
+});
+
+test("each source of the Codex binary needs a full root", WINDOWS_ONLY, () => {
+  const none = { CODEX_HOME: path.join(HOME, "no-codex-home"), PATH: "" };
+  for (const file of ["\\tools\\codex.exe", "/tools/codex.exe", "C:codex.exe"]) {
+    assert.equal(rpc.resolveCodex({ ...none, OPENMSG_CODEX_BIN: file }), null, file);
+  }
+  assert.ok(rpc.resolveCodex({ ...none, OPENMSG_CODEX_BIN: "C:\\tools\\codex.exe" }));
+});
+
+test("install refuses a script path that the Run key cannot hold", () => {
+  assert.throws(() => service.mustFitRunKey("C:\\x\\%USERNAME%\\gateway.vbs"), /holds a "%"/);
+  assert.doesNotThrow(() => service.mustFitRunKey("C:\\Users\\測試\\.openmsg\\gateway.vbs"));
+});
+
 test("the launcher quotes each path, and it runs the gateway with no window", () => {
   const script = service.launcherScript({
     node: "C:\\Program Files\\nodejs\\node.exe",
@@ -305,8 +368,8 @@ test("the launcher quotes each path, and it runs the gateway with no window", ()
     lock: "C:\\Users\\x y\\gateway.lock",
     args: ["--port", "7801"],
   });
-  assert.ok(script.includes('""C:\\Program Files\\nodejs\\node.exe""'), script);
-  assert.ok(script.includes('""C:\\a b\\cli.mjs"" gateway start --log ""C:\\Users\\x y\\gateway.log"" --port 7801'), script);
+  assert.ok(script.includes('("OPENMSG_LAUNCH_NODE") = "C:\\Program Files\\nodejs\\node.exe"'), script);
+  assert.ok(script.includes('""%OPENMSG_LAUNCH_NODE%"" ""%OPENMSG_LAUNCH_CLI%"" gateway start --log ""%OPENMSG_LAUNCH_LOG%"" --port 7801'), script);
   assert.ok(script.includes(', 0, True'), "window style 0, and it waits for the gateway");
   assert.ok(script.includes("Do While Not"), "it starts the gateway again until the stop file exists");
   assert.ok(!script.includes("cmd /c"), "no shell reads a path");
@@ -340,8 +403,15 @@ test("the log keeps one old copy", () => {
   assert.equal(fs.readFileSync(file, "utf8"), "second\n");
 });
 
-test("the real launcher runs a path with other characters, and the stop file ends it", WINDOWS_ONLY, async () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "openmsg-測試 café 100%-"));
+test("the real launcher keeps each path as it is, and the stop file ends it", WINDOWS_ONLY, async (t) => {
+  if (!scriptHostRuns()) return t.skip("Windows Script Host does not run here");
+  // `Run` would expand this name, and the result is a directory that does not exist.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "openmsg-測試 café 100%-%USERNAME%-"));
+  const started = [];
+  t.after(() => {
+    for (const child of started) child.kill();
+    fs.rmSync(home, { recursive: true, force: true, maxRetries: 5 });
+  });
   const mark = path.join(home, "ran.txt");
   const cli = path.join(home, "cli.mjs");
   fs.writeFileSync(cli, `
@@ -351,49 +421,57 @@ test("the real launcher runs a path with other characters, and the stop file end
   const launcher = path.join(home, "gateway.vbs");
   const stop = path.join(home, "gateway.stop");
   const lock = path.join(home, "gateway.lock");
-  const node = process.execPath;
+  // The program itself goes under that name too. A hard link fails across volumes.
+  const node = path.join(home, "node.exe");
+  fs.copyFileSync(fs.realpathSync(process.execPath), node);
   service.writeLauncher(launcher, service.launcherScript({ node, cli, log: path.join(home, "g.log"), stop, lock, args: ["--port", "1"] }));
   // A stop file from an earlier day must not stop this start.
   fs.writeFileSync(stop, "");
-  const start = () => spawn(system32("wscript.exe"), ["//B", launcher], { stdio: "ignore" });
+  const start = () => {
+    const child = spawn(system32("wscript.exe"), ["//B", launcher], { stdio: "ignore" });
+    started.push(child);
+    return child;
+  };
   const ended = (c) => new Promise((resolve) => c.once("exit", resolve));
   const child = start();
   const gone = ended(child);
   const until = Date.now() + 20_000;
   while (!fs.existsSync(mark) && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
-  assert.match(fs.readFileSync(mark, "utf8"), /gateway start --log .*g\.log --port 1/);
+  const seen = fs.readFileSync(mark, "utf8");
+  assert.ok(seen.includes(`gateway start --log ${path.join(home, "g.log")} --port 1`), seen);
 
   // A second script ends at once, so it cannot start a gateway after a stop.
   const second = start();
   const quick = await Promise.race([ended(second), new Promise((r) => setTimeout(() => r("still runs"), 4000))]);
-  if (quick === "still runs") second.kill();
   assert.equal(quick, 0, "one script runs for one owner");
 
   fs.writeFileSync(stop, "");
   const code = await Promise.race([gone, new Promise((r) => setTimeout(() => r("still runs"), 12_000))]);
-  if (code === "still runs") child.kill();
   assert.equal(code, 0, "the script ends when the stop file exists");
   assert.equal(fs.existsSync(stop), false, "the script removes the stop file");
-  fs.rmSync(home, { recursive: true, force: true });
 });
 
-test("the launcher writes to the log when node does not start", WINDOWS_ONLY, async () => {
+test("the launcher writes to the log when node does not start", WINDOWS_ONLY, async (t) => {
+  if (!scriptHostRuns()) return t.skip("Windows Script Host does not run here");
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "openmsg-win-node-"));
+  let child = null;
+  t.after(() => {
+    child?.kill();
+    fs.rmSync(home, { recursive: true, force: true, maxRetries: 5 });
+  });
   const log = path.join(home, "g.log");
   const launcher = path.join(home, "gateway.vbs");
   const stop = path.join(home, "gateway.stop");
   service.writeLauncher(launcher, service.launcherScript({
     node: path.join(home, "no-node.exe"), cli: "x.mjs", log, stop, lock: path.join(home, "gateway.lock"),
   }));
-  const child = spawn(system32("wscript.exe"), ["//B", launcher], { stdio: "ignore" });
+  child = spawn(system32("wscript.exe"), ["//B", launcher], { stdio: "ignore" });
   const gone = new Promise((resolve) => child.once("exit", resolve));
   const until = Date.now() + 8000;
   while (!fs.existsSync(log) && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
   fs.writeFileSync(stop, "");
   await Promise.race([gone, new Promise((r) => setTimeout(r, 8000))]);
-  child.kill();
   assert.match(fs.readFileSync(log, "utf8"), /could not start node/);
-  fs.rmSync(home, { recursive: true, force: true });
 });
 
 test("a failed start of a gateway leaves its reason in the log, and leaves the stop file", WINDOWS_ONLY, () => {

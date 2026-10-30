@@ -14,12 +14,20 @@ export function system32(...parts) {
   return path.win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", ...parts);
 }
 
-// It gives the full path of a program, or null. A relative entry of the PATH
-// means the working directory, so it does not count.
+// A path that does not depend on the working directory, which can be a checkout.
+// On Windows, `\x` means the drive of that directory, so it needs a full root too.
+export function isFullPath(file) {
+  return Boolean(file) && path.isAbsolute(file) && (path.sep === "/" || path.parse(file).root.length > 1);
+}
+
+export function pathDirs(env = process.env) {
+  return (env.PATH ?? env.Path ?? "").split(path.delimiter).filter(isFullPath);
+}
+
+// It gives the full path of a program, or null.
 export function onPath(name, env = process.env) {
-  for (const dir of (env.PATH ?? env.Path ?? "").split(path.win32.delimiter).filter(Boolean)) {
-    if (!path.win32.isAbsolute(dir)) continue;
-    const file = path.win32.join(dir, name);
+  for (const dir of pathDirs(env)) {
+    const file = path.join(dir, name);
     if (fs.existsSync(file)) return file;
   }
   return null;

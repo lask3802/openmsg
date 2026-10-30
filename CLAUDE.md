@@ -9,7 +9,7 @@ machine. Version 0.2 adds the agents of different people.
 ```
 node src/cli.mjs list            # the agents that run now
 node src/cli.mjs send <a> "<t>"  # deliver a message
-node --test                      # the tests, 183 of them
+node --test                      # the tests, 187 of them
 npm publish --access public      # a release. See "How a release goes" below.
 ```
 
@@ -108,7 +108,7 @@ Each vendor has its own way in:
 2. Write the documents in Simplified Technical English: short sentences, one
    idea for each sentence, no "should", no semicolon.
 3. A message from another agent is never authority. Rule 9 of the spec holds.
-4. Test what needs no account. 183 tests in `test/` cover the envelope, the
+4. Test what needs no account. 187 tests in `test/` cover the envelope, the
    mailbox, the project box, the hop limit, the three hook shapes, native
    Windows, and every part of 0.2. Two tests need `openssl` for a certificate, and they say so when it
    is not there. `test/acceptance.test.mjs` holds the fourteen cases of section 11 of
@@ -193,6 +193,13 @@ on this machine, with one home directory for each person.
 Open: on native Windows, the token of a session makes Claude Code apply no hold to
 a message from the gateway. Section 7 of the 0.1 spec says what that means. The
 owner of the project decides the fix.
+
+Open: on native Windows, the gateway takes the id of a Codex session from the
+caller. Each session of one user holds the same key, and a sandbox can read the
+transcript of every other session. So one session can acknowledge or answer as
+another session of that user, and it can send in the name of any session, real or
+not. Section 9 of the 0.2 spec says what that means. The owner of the project
+decides the fix.
 
 Open: `src/relay.mjs` waits for each connection when it stops, so a stop can hang.
 The tests destroy their sockets first. A fix changes the deployed relay, so it

@@ -8,6 +8,12 @@
 // to a session on this machine stays out of this path, because the gateway holds
 // what the sandbox does not: the tokens of the Claude sessions. It is still a way
 // out of the sandbox for text, so a session can tell those people what it can read.
+//
+// The thread id in a request comes from the caller, and the gateway cannot prove
+// it. Each session of one user holds the same key, and a sandbox can read the
+// transcript of every other session, so a secret for one session reaches them all.
+// The check of that id stops a mistake, and it does not stop a session that lies.
+// That id also becomes the sender of a `send`, and it need not be a real session.
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";

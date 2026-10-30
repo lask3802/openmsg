@@ -38,13 +38,19 @@ export function paths() {
 // VBScript writes one quote in a string as two quotes. The script runs node
 // directly, with no `cmd /c`, so no shell reads a path.
 //
+// `Run` expands each %NAME% in its line, also inside quotes, so a directory that is
+// really called %USERNAME% would become another path. The paths therefore wait in
+// variables of this process, and the line names only those variables. The expansion
+// goes one time, so the text of a path stays as it is.
+//
 // One script runs for one owner. A second script would start the gateway again
 // after a stop, so it ends at once. A stop file that is older than this script
 // belongs to no one, so it goes first. A failure to start node goes to the log,
 // because this process has no window.
 export function launcherScript({ node, cli, log, stop, lock, openmsgHome = null, args = [] }) {
-  const line = [`"${node}"`, `"${cli}"`, "gateway", "start", "--log", `"${log}"`, ...args].join(" ");
+  const line = ['"%OPENMSG_LAUNCH_NODE%"', '"%OPENMSG_LAUNCH_CLI%"', "gateway", "start", "--log", '"%OPENMSG_LAUNCH_LOG%"', ...args].join(" ");
   const vbs = (s) => `"${s.replaceAll('"', '""')}"`;
+  const variable = (name, value) => `shell.Environment("Process")("${name}") = ${vbs(value)}`;
   return [
     'Set shell = CreateObject("WScript.Shell")',
     'Set files = CreateObject("Scripting.FileSystemObject")',
@@ -52,7 +58,10 @@ export function launcherScript({ node, cli, log, stop, lock, openmsgHome = null,
     `Set held = files.OpenTextFile(${vbs(lock)}, 2, True)`,
     "If Err.Number <> 0 Then WScript.Quit",
     `If files.FileExists(${vbs(stop)}) Then files.DeleteFile ${vbs(stop)}`,
-    ...(openmsgHome ? [`shell.Environment("Process")("OPENMSG_HOME") = ${vbs(openmsgHome)}`] : []),
+    ...(openmsgHome ? [variable("OPENMSG_HOME", openmsgHome)] : []),
+    variable("OPENMSG_LAUNCH_NODE", node),
+    variable("OPENMSG_LAUNCH_CLI", cli),
+    variable("OPENMSG_LAUNCH_LOG", log),
     `Do While Not files.FileExists(${vbs(stop)})`,
     "  Err.Clear",
     `  shell.Run ${vbs(line)}, 0, True`,
@@ -104,10 +113,20 @@ function needWindows() {
   }
 }
 
+// The path of the script goes in the Run key as text. If Windows expands a %NAME%
+// there at logon, the script does not start, and it has no log to say so. No test
+// can see a logon, so install refuses such a path.
+export function mustFitRunKey(launcher) {
+  if (launcher.includes("%")) {
+    throw new Error(`the path ${launcher} holds a "%", and the Run key cannot hold it safely. Set OPENMSG_HOME to another directory`);
+  }
+}
+
 // A second install with other arguments must not run beside the first one.
 export async function install(cli, { port = null, ...options } = {}) {
   needWindows();
   const { launcher, log, stop, lock } = paths();
+  mustFitRunKey(launcher);
   const args = startArgs({ port: options.givenPort ?? null, host: options.host ?? null, relay: options.relay ?? null });
   fs.mkdirSync(path.dirname(launcher), { recursive: true });
   const before = await stopGateway(port);

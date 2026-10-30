@@ -18,6 +18,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { randomUUID } from "node:crypto";
+import { isFullPath, pathDirs } from "../windows.mjs";
 
 const RPC_TIMEOUT_MS = 15000;
 // A thread that changed in this window counts as a session that runs.
@@ -51,14 +52,17 @@ function newestAppBinary(localAppData) {
 
 // The binary of the Codex app goes first. It is the newest one that a person
 // has, and an older binary can fail to read the database of a newer one.
+//
+// Only a full path runs. A bare name or a relative path finds a file in the working
+// directory, and that directory can be a checkout that nobody trusts.
 export function resolveCodex(env = process.env) {
-  if (env.OPENMSG_CODEX_BIN) return asCommand(env.OPENMSG_CODEX_BIN);
-  const app = env.LOCALAPPDATA ? newestAppBinary(env.LOCALAPPDATA) : null;
-  if (app) return asCommand(app);
+  const full = (file) => (isFullPath(file) ? asCommand(file) : null);
+  const chosen = full(env.OPENMSG_CODEX_BIN) ?? full(env.LOCALAPPDATA && newestAppBinary(env.LOCALAPPDATA));
+  if (chosen) return chosen;
   const home = env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
   const managed = path.join(home, "packages", "app-server-daemon", "current", "bin", "codex.exe");
-  if (fs.existsSync(managed)) return asCommand(managed);
-  for (const dir of (env.PATH ?? env.Path ?? "").split(path.delimiter).filter(Boolean)) {
+  if (fs.existsSync(managed) && full(managed)) return full(managed);
+  for (const dir of pathDirs(env)) {
     const exe = path.join(dir, "codex.exe");
     if (fs.existsSync(exe)) return asCommand(exe);
     const script = path.join(dir, "node_modules", "@openai", "codex", "bin", "codex.js");
@@ -90,7 +94,7 @@ function stopServer(child) {
 // the server after `use` ends.
 export async function withAppServer(use, { timeoutMs = RPC_TIMEOUT_MS, env = process.env } = {}) {
   const bin = resolveCodex(env);
-  if (!bin) throw new Error("no Codex binary found. Install the Codex app, or set OPENMSG_CODEX_BIN");
+  if (!bin) throw new Error("no Codex binary found. Install the Codex app, or set OPENMSG_CODEX_BIN to a full path");
   const child = spawn(bin.command, [...bin.args, "app-server", "--listen", "stdio://"], {
     stdio: ["pipe", "pipe", "ignore"],
     windowsHide: true,

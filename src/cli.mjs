@@ -489,9 +489,9 @@ async function cmdSendRemote(target, text, replyTo, args) {
   }
 }
 
-// The gateway runs a command for any Codex session, and each session answers for
-// its own messages only. Without this rule, a session could tell a sender that
-// another session read a message.
+// The gateway runs a command for any Codex session, and a session answers for its
+// own messages. The id here comes from the caller, so this stops a mistake, and it
+// does not stop a session that lies. See the top of localrun.mjs.
 function mustBeOwnMessage(row) {
   if (process.env.OPENMSG_LOCAL && row.target?.session !== process.env.CODEX_THREAD_ID) {
     throw new Error(`message ${row.messageId.slice(0, 8)} went to another session`);

@@ -379,7 +379,16 @@ Rules:
    - A `send` must name an agent of another person. A message to a session on
      this machine stays out of this path, because the gateway holds the tokens of
      the local Claude sessions.
-   - `ack` and `--reply-to` name only a message for the session that asks.
+   - `ack` and `--reply-to` name a message for the session that asks. The caller
+     names that session, and the gateway cannot prove the name. Each session of
+     one user holds the same key, and a sandbox can read the transcript of every
+     other session. So this rule stops a mistake, and it does not stop a session
+     that lies. Such a session can mark a message of another session as read. It
+     can reply in the name of that session. It can also send a new message in the
+     name of any session, and that session need not exist. The receiver sees that
+     name under the signature of the owner. The signature proves the owner, and
+     it does not prove the session. This reaches only the sessions of one owner.
+     This is an open decision of the project.
    - The command runs in the home directory of openmsg, and not in the working
      directory of the gateway. A sandbox can write to that directory.
    - The path is a way out of the sandbox for text. A session can tell a person
