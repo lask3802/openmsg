@@ -102,7 +102,7 @@ async function liveSession(vendor, id, { maxAgeMs = 5000 } = {}) {
 // and routing data is for a gateway. Neither one carries a working directory,
 // a socket path, or a token.
 export async function descriptions(projectId) {
-  const rows = published.list(projectId);
+  const rows = published.list(projectId).filter((row) => published.reachable(row));
   const presence = [];
   const routing = [];
   const me = identity.load();
@@ -262,7 +262,7 @@ export async function release(record, { deliver = deliverLocal, now = Date.now()
   if (!(Date.parse(record.expiresAt) > now)) return stop("expired", `the deadline passed at ${record.expiresAt}`);
 
   const mine = published.find(record.project, { session: record.target.session });
-  if (!mine) return stop("not-published", "that session is not published in this project");
+  if (!mine || !published.reachable(mine)) return stop("not-published", "that session is not published in this project");
   if (record.target.epoch !== mine.epoch) {
     return stop("old-epoch", `the message names epoch ${record.target.epoch}, and the session runs epoch ${mine.epoch}`);
   }

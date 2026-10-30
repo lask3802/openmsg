@@ -235,6 +235,14 @@ export async function serve({ port = 0, host = "127.0.0.1", cert = null, key = n
   // to every machine of that owner. The machine that holds the session takes
   // it and answers, and the others stay quiet.
   const owners = new Map();
+  // A close waits for each connection. A WebSocket stays open until a side ends
+  // it, and a client can stay silent before or after TLS starts. A stop of the
+  // relay ends them all here.
+  const connections = new Set();
+  server.on("connection", (socket) => {
+    connections.add(socket);
+    socket.once("close", () => connections.delete(socket));
+  });
 
   server.on("upgrade", (request, socket) => {
     if (!accepts(request)) {
@@ -316,7 +324,10 @@ export async function serve({ port = 0, host = "127.0.0.1", cert = null, key = n
     port: real,
     url: `${secure ? "wss" : "ws"}://${host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host}:${real}`,
     owners,
-    close: () => new Promise((done) => server.close(done)),
+    close: () => new Promise((done) => {
+      server.close(done);
+      for (const socket of connections) socket.destroy();
+    }),
   };
 }
 

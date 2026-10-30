@@ -59,12 +59,8 @@ const alice = as(ALICE, () => identity.create({ label: "alice" }));
 const bob = as(DESK, () => identity.create({ label: "bob" }));
 const running = await relay.serve({ port: 0, host: "127.0.0.1" });
 const children = [];
-// A failed test leaves its connection open, and a close waits for each connection.
-const sockets = new Set();
-running.server.on("upgrade", (_, socket) => sockets.add(socket));
 after(() => {
   for (const c of children) c.kill();
-  for (const s of sockets) s.destroy();
   return running.close();
 });
 for (const home of [ALICE, DESK, LAPTOP]) as(home, () => saveSettings({ relay: running.url }));

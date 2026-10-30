@@ -66,6 +66,8 @@ For the agents of another person, on another machine:
   openmsg gateway stop              stop the gateway that runs now
   openmsg gateway start [--port <n>] [--host <h>] [--relay <url>] [--log <file>]
   openmsg publish <agent>           let the project reach this session
+     [--project <label>]
+     [--skip-hold-gate]             needed for a Claude session on native Windows
   openmsg unpublish <alias>         take a session back
   openmsg permit <owner> <accept|hold|refuse>
   openmsg held [<id>] [--text]      the messages that wait for you
@@ -717,7 +719,7 @@ async function cmdGateway(args) {
   stamp(`gateway of ${me.label} (${me.ownerId}) listens on ${running.url}`);
   const rows = published.list();
   if (rows.length === 0) stamp("nothing is published. Run: openmsg publish <agent>");
-  for (const r of rows) stamp(`published ${r.alias} · project ${r.project} · epoch ${r.epoch}`);
+  for (const r of rows) stamp(`published ${r.alias} · project ${r.project} · epoch ${r.epoch}${holdNote(r)}`);
   let stopping = false;
   const stop = () => {
     if (stopping) return;
@@ -734,18 +736,28 @@ async function cmdGateway(args) {
   }, 1000).unref();
 }
 
+function holdNote(row) {
+  if (!published.reachable(row)) return " · not reachable: publish it again with --skip-hold-gate";
+  return row.skipHoldGate ? " · skips the hold gate" : "";
+}
+
 async function cmdPublish(args) {
   const [query] = positional(args, ["project"]);
   if (!query) {
     const rows = published.list();
     if (rows.length === 0) console.log("nothing is published");
-    for (const r of rows) console.log(`${r.alias.padEnd(28)} ${r.project}  epoch ${r.epoch}  session ${r.session}`);
+    for (const r of rows) console.log(`${r.alias.padEnd(28)} ${r.project}  epoch ${r.epoch}  session ${r.session}${holdNote(r)}`);
     return;
   }
   const agent = await findAgent(query);
-  const row = published.publish(projectId(args), agent);
+  const row = published.publish(projectId(args), agent, { skipHoldGate: args.includes("--skip-hold-gate") });
   console.log(`published ${row.alias} in ${row.project ?? projectId(args)}, epoch ${row.epoch}`);
   console.log("Only this session, and only this project, can be reached. Nothing else is published.");
+  if (row.skipHoldGate) {
+    console.log("This session skips the hold gate of Claude Code. A person that you accepted can reach it");
+    console.log("with no hold, also if it bypasses permission prompts. A crossSessionInbound value on the");
+    console.log("session changes that. The gateway cannot see that value. Read the README before you use this.");
+  }
 }
 
 function cmdUnpublish(args) {
@@ -845,6 +857,11 @@ async function cmdAccept(args) {
   const row = inbound.findByPrefix(id ?? "");
   if (!row) throw new Error(`no message ${id}. Run: openmsg held`);
   if (row.status !== "held") throw new Error(`message ${id} is "${row.status}", and only a held message is accepted`);
+  // A refusal has no way back, so this must come before the release.
+  const mine = published.find(row.project, { session: row.target.session });
+  if (mine && !published.reachable(mine)) {
+    throw new Error(`${mine.alias} has no yes for the hold gate. Run: openmsg publish ${mine.alias} --skip-hold-gate`);
+  }
   if (args.includes("--always")) {
     permissions.set(row.project, row.from.owner, "accept");
     console.log(`${row.from.label} (${row.from.owner}) is now "accept" in ${row.project}`);

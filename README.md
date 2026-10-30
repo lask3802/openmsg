@@ -127,7 +127,7 @@ node src/cli.mjs list
 Node 22 or later. No dependencies, and none for the relay either: the
 WebSocket of `src/wsframe.mjs` is both sides of RFC 6455 in one small file.
 
-Run the tests with `node --test`. 187 of them, and they need no account:
+Run the tests with `node --test`. 197 of them, and they need no account:
 they run two gateways and a relay on this machine, as two people.
 
 An agent with no push entry point needs its hook. Claude Code needs its hook
@@ -153,11 +153,13 @@ discovery on Windows yet.
   Codex session, `openmsg send <agent>@<owner>` and `openmsg ack` therefore ask the
   gateway of the owner to run them. The gateway takes only those two commands, and
   only for another person. That path is a way out of the sandbox for text, so a
-  session can tell a person that the owner accepted what it can read. The sessions
-  of one user are not separate here: the gateway takes the id of a session from the
-  caller. So one session can acknowledge or answer as another session of that user,
-  and it can send in the name of any session. The signature proves the owner, and
-  not the session. macOS and Linux do not use this path.
+  session can tell a person that the owner accepted what it can read. One user of
+  the operating system is one trust boundary here. The gateway takes the id of a
+  session from the caller, so one session can acknowledge or answer as another
+  session of that user, and it can send in the name of any session. The signature
+  proves the owner, and not the session. The checks of this path stop a mistake, and
+  they do not separate two sessions of one user. macOS and Linux do not use this
+  path.
 
 Start the gateway at each logon:
 
@@ -175,9 +177,31 @@ PC. The relay holds a message until the deadline of that message. The deadline i
 **Read this before you publish a Claude session on Windows.** The token marks the
 gateway as a child of the session, and Claude Code then applies no hold to a
 message from it, also in a session that bypasses permission prompts. On macOS and
-Linux that hold still applies. So on Windows, a person that you accepted can reach
-such a session with nothing to stop the message. Set `crossSessionInbound` for that
-session, or do not publish it. This is an open decision of the project.
+Linux that hold still applies. So on Windows, `openmsg publish` refuses a Claude
+session until you say yes for that session:
+
+```
+openmsg publish claude:api-worker --skip-hold-gate
+```
+
+A person that you accepted can then reach that session with no hold from Claude
+Code. A new session under the same name needs the flag again. The gateway cannot
+see the permission mode of a session, so each Claude session on Windows needs the
+flag.
+
+To keep a second control, also set `crossSessionInbound` for that session. Write
+`{"crossSessionInbound":"hold"}` to a file, and start the session with
+`claude --settings <file>`. Claude Code then shows a notice for each message, and
+it delivers nothing until an `accept` applies. The outbox still shows
+`adapter-accepted`, because the gateway cannot see that value. The value `refuse`
+drops each message, and the value `accept` protects nothing. A value in the user
+settings applies to every session. The value also applies to a message from this
+machine and to the project box, and the command there still says `sent`.
+
+A message from this machine to a Claude session also uses the token, and the flag
+does not apply to that path. So a person that you accepted can ask a Codex session
+with no sandbox to send to a Claude session that is not published. That path stays
+inside one user of the operating system.
 
 ## Run a relay
 

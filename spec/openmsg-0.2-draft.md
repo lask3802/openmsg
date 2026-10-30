@@ -352,7 +352,8 @@ Rules:
 1. The gateway of the receiver gives the message to the local adapter of 0.1.
 2. The adapters do not change. The last step is the same as for one person.
 3. Only the sessions that the owner selects are published. The default is that
-   nothing is published.
+   nothing is published. On native Windows, a Claude session also needs the flag
+   `--skip-hold-gate`. Section 7 of the 0.1 spec gives the reason and the rules.
 4. A published session has two descriptions, and they are not the same thing:
    - **Presence**, which a person reads: the alias and the status.
    - **Routing data**, which a gateway reads: the owner id, the project id, the
@@ -388,7 +389,9 @@ Rules:
      name of any session, and that session need not exist. The receiver sees that
      name under the signature of the owner. The signature proves the owner, and
      it does not prove the session. This reaches only the sessions of one owner.
-     This is an open decision of the project.
+   - One user of the operating system is one trust boundary. The sessions of one
+     user can read the same files, so no secret separates them. The checks of this
+     path stop a mistake. They are not a security boundary between sessions.
    - The command runs in the home directory of openmsg, and not in the working
      directory of the gateway. A sandbox can write to that directory.
    - The path is a way out of the sandbox for text. A session can tell a person

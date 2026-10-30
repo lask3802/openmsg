@@ -4,8 +4,11 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import tls from "node:tls";
+import { setTimeout as wait } from "node:timers/promises";
 import { execFileSync } from "node:child_process";
 
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "openmsg-tls-"));
@@ -74,6 +77,21 @@ test("a relay with a certificate speaks wss, and a gateway reaches it", { skip: 
   assert.equal(link.welcome.type, "welcome");
   assert.equal(link.owner, identity.load().ownerId);
   link.close();
+});
+
+test("a stop of the relay does not wait for a silent client, before or after TLS starts", { skip: pair ? false : "openssl is not here" }, async (t) => {
+  const running = await relay.serve({ port: 0, host: "127.0.0.1", cert: pair.cert, key: pair.key });
+  const seen = new Set();
+  running.server.on("connection", (socket) => seen.add(socket));
+  t.after(() => {
+    for (const socket of seen) socket.destroy();
+  });
+  const raw = net.connect(running.port, "127.0.0.1");
+  const secure = tls.connect({ port: running.port, host: "127.0.0.1", ca: fs.readFileSync(pair.cert) });
+  for (const socket of [raw, secure]) socket.on("error", () => {});
+  await new Promise((resolve) => secure.once("secureConnect", resolve));
+  await wait(50);
+  assert.equal(await Promise.race([running.close().then(() => true), wait(5000, false, { ref: false })]), true);
 });
 
 test("a message travels over the sealed connection", { skip: pair ? false : "openssl is not here" }, async () => {

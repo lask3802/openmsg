@@ -60,12 +60,8 @@ as(BOB, () => register({ ...SESSION, cwd: "/work/web-app" }));
 
 const running = await relay.serve({ port: 0, host: "127.0.0.1" });
 const children = [];
-// A failed test leaves its connection open, and a close waits for each connection.
-const sockets = new Set();
-running.server.on("upgrade", (_, socket) => sockets.add(socket));
 after(() => {
   for (const c of children) c.kill();
-  for (const s of sockets) s.destroy();
   return running.close();
 });
 const RELAY_URL = running.url;

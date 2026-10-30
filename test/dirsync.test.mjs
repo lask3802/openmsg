@@ -50,13 +50,7 @@ async function asAsync(home, fn) {
 const alice = as(DESK, () => identity.create({ label: "alice" }));
 const bob = as(BOB, () => identity.create({ label: "bob" }));
 const running = await relay.serve({ port: 0, host: "127.0.0.1" });
-// A failed test leaves its connection open, and a close waits for each connection.
-const sockets = new Set();
-running.server.on("upgrade", (_, socket) => sockets.add(socket));
-after(() => {
-  for (const s of sockets) s.destroy();
-  return running.close();
-});
+after(() => running.close());
 for (const home of [DESK, LAPTOP, BOB]) as(home, () => saveSettings({ relay: running.url }));
 
 const offer = as(DESK, () => invite.create({ label: "web-app", endpoint: "http://127.0.0.1:7001" }));

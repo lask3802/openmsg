@@ -22,7 +22,9 @@ const { hookTargets, installHooks } = await import("../src/hookinstall.mjs");
 const { system32, lockDown, onPath, pathDirs } = await import("../src/windows.mjs");
 const { layoutOf, workspaceOf } = await import("../src/remote.mjs");
 const { compose } = await import("../src/envelope.mjs");
-const { forPeer } = await import("../src/gateway.mjs");
+const { forPeer, release, descriptions } = await import("../src/gateway.mjs");
+const published = await import("../src/published.mjs");
+const identity = await import("../src/identity.mjs");
 
 // A stub of `codex app-server`. It writes each request and its own argv to a
 // file, and it answers with the JSON that the test gives it.
@@ -354,7 +356,7 @@ test("each source of the Codex binary needs a full root", WINDOWS_ONLY, () => {
   assert.ok(rpc.resolveCodex({ ...none, OPENMSG_CODEX_BIN: "C:\\tools\\codex.exe" }));
 });
 
-test("install refuses a script path that the Run key cannot hold", () => {
+test("a script path with a percent sign does not fit the Run key", () => {
   assert.throws(() => service.mustFitRunKey("C:\\x\\%USERNAME%\\gateway.vbs"), /holds a "%"/);
   assert.doesNotThrow(() => service.mustFitRunKey("C:\\Users\\測試\\.openmsg\\gateway.vbs"));
 });
@@ -511,6 +513,123 @@ test("a program in the checkout does not run in place of git", WINDOWS_ONLY, () 
   assert.notEqual(path.win32.dirname(onPath("git.exe")).toLowerCase(), repo.toLowerCase());
   assert.equal(workspaceOf(repo), null, "this directory is no repository, and the git of the PATH says so");
   fs.rmSync(repo, { recursive: true, force: true });
+});
+
+test("a Claude session on native Windows waits for the yes of its owner", () => {
+  const agent = { vendor: "claude", id: "ses-hold", name: "worker" };
+  assert.throws(() => published.publish("p-hold", agent, { platform: "win32" }), /skips the hold gate.*--skip-hold-gate/);
+  assert.equal(published.list("p-hold").length, 0);
+  assert.equal(published.publish("p-hold", agent, { platform: "win32", skipHoldGate: true }).skipHoldGate, true);
+});
+
+test("each new session under one name needs its own yes", () => {
+  const next = { vendor: "claude", id: "ses-hold-2", name: "worker" };
+  assert.throws(() => published.publish("p-hold", next, { platform: "win32" }), /--skip-hold-gate/);
+  assert.equal(published.find("p-hold", { alias: "claude:worker" }).session, "ses-hold", "a refused publish changes nothing");
+});
+
+test("a session that keeps its hold gate needs no yes", () => {
+  const claude = { vendor: "claude", id: "ses-mac", name: "mac" };
+  assert.equal("skipHoldGate" in published.publish("p-keep", claude, { platform: "linux", skipHoldGate: true }), false);
+  const codex = { vendor: "codex", id: "thread-1", name: "win" };
+  assert.equal("skipHoldGate" in published.publish("p-keep", codex, { platform: "win32" }), false);
+});
+
+test("a row with no yes is not reachable on native Windows", () => {
+  assert.equal(published.reachable({ vendor: "claude" }, "win32"), false);
+  assert.equal(published.reachable({ vendor: "claude", skipHoldGate: true }, "win32"), true);
+  assert.equal(published.reachable({ vendor: "claude" }, "linux"), true);
+  assert.equal(published.reachable({ vendor: "codex" }, "win32"), true);
+});
+
+test("the gateway does not offer or reach a Claude row with no yes", WINDOWS_ONLY, async () => {
+  const before = process.env.OPENMSG_HOME;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "openmsg-win-row-"));
+  process.env.OPENMSG_HOME = home;
+  try {
+    identity.create({ label: "w" });
+    const write = (extra) => fs.writeFileSync(path.join(home, "published.json"), JSON.stringify({
+      version: 2,
+      projects: { p: { "claude:old": { alias: "claude:old", vendor: "claude", name: "old", session: "ses-old", epoch: 1, ...extra } } },
+    }));
+    const record = {
+      messageId: "11111111-0000-0000-0000-000000000000",
+      project: "p",
+      from: { owner: "o_x", label: "x" },
+      target: { session: "ses-old", epoch: 1 },
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+    const deliver = () => assert.fail("no adapter may see this message");
+
+    write({});
+    assert.deepEqual((await descriptions("p")).routing, []);
+    assert.equal((await release(record, { deliver })).reason, "not-published");
+
+    // With the yes, the same row goes on to the next rule.
+    write({ skipHoldGate: true });
+    assert.equal((await descriptions("p")).routing.length, 1);
+    assert.equal((await release(record, { deliver })).reason, "session-gone");
+  } finally {
+    process.env.OPENMSG_HOME = before;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("publish takes --skip-hold-gate, and it says what that means", WINDOWS_ONLY, (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "openmsg-win-pub-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const sessions = path.join(home, ".claude", "sessions");
+  fs.mkdirSync(sessions, { recursive: true });
+  fs.writeFileSync(path.join(sessions, "1.json"), JSON.stringify({
+    sessionId: "ses-pub",
+    name: "pub",
+    pid: process.pid,
+    messagingSocketPath: "\\\\.\\pipe\\openmsg-test",
+  }));
+  const env = {
+    ...process.env,
+    OPENMSG_HOME: path.join(home, "om"),
+    OPENMSG_CODEX_BIN: path.join(home, "no-such-codex.exe"),
+    USERPROFILE: home,
+  };
+  delete env.CLAUDE_CONFIG_DIR;
+  const run = (...args) => spawnSync(process.execPath, [CLI, ...args], { env, encoding: "utf8" });
+  assert.equal(run("id", "create", "--label", "w").status, 0);
+  assert.equal(run("invite", "create", "--project", "web").status, 0);
+
+  const refused = run("publish", "claude:pub");
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /skips the hold gate.*--skip-hold-gate/);
+  assert.match(run("publish").stdout, /nothing is published/);
+
+  const yes = run("publish", "claude:pub", "--skip-hold-gate");
+  assert.equal(yes.status, 0, yes.stderr);
+  assert.match(yes.stdout, /skips the hold gate/);
+  assert.match(yes.stdout, /crossSessionInbound/);
+  assert.match(run("publish").stdout, /claude:pub.*skips the hold gate/);
+});
+
+test("accept keeps a held message for a row with no yes", WINDOWS_ONLY, (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "openmsg-win-held-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const row = {
+    messageId: "22222222-0000-0000-0000-000000000000",
+    project: "p",
+    from: { owner: "o_x", label: "x" },
+    target: { session: "ses-held", epoch: 1 },
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    status: "held",
+  };
+  fs.writeFileSync(path.join(home, "inbound.jsonl"), JSON.stringify(row) + "\n");
+  fs.writeFileSync(path.join(home, "published.json"), JSON.stringify({
+    version: 2,
+    projects: { p: { "claude:held": { alias: "claude:held", vendor: "claude", name: "held", session: "ses-held", epoch: 1 } } },
+  }));
+  const r = spawnSync(process.execPath, [CLI, "accept", "22222222"], { env: { ...process.env, OPENMSG_HOME: home }, encoding: "utf8" });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /publish claude:held --skip-hold-gate/);
+  const last = fs.readFileSync(path.join(home, "inbound.jsonl"), "utf8").trim().split("\n").at(-1);
+  assert.equal(JSON.parse(last).status, "held");
 });
 
 test("the frame gives no quote of the sender to the command that it shows", () => {

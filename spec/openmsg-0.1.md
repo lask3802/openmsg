@@ -278,13 +278,38 @@ On native Windows, these entry points differ:
    on Windows searches the working directory first.
 7. OpenCode has no discovery on Windows in this version.
 
-**Open decision.** A token marks the connection as a child of the session. If
-no `crossSessionInbound` value applies, Claude Code delivers from a child with no
+**The hold gate.** A token marks the connection as a child of the session. If no
+`crossSessionInbound` value applies, Claude Code delivers from a child with no
 hold, also in a session that bypasses permission prompts. On macOS and Linux the
-adapter sends no stored token, so that hold still applies. On native Windows no
-connection works without the token, so a message from an accepted person reaches
-such a session with no hold from Claude Code. Set `crossSessionInbound` for the
-session, or do not publish a session that bypasses permission prompts.
+adapter sends no stored token, so that hold still applies. The exception is a
+gateway that a session started: it is a child of that session, so that session
+treats its message as its own. On native Windows no connection works without the
+token, so every Claude session there skips the hold gate. An implementation cannot
+see the permission mode of a session. So on native Windows these rules apply:
+
+1. `openmsg publish` must refuse a Claude session without the flag
+   `--skip-hold-gate`. The flag is the yes of the owner. The output must say that
+   the session skips the hold gate.
+2. The yes holds for one session. A new session under the same name needs the flag
+   again.
+3. The gateway must keep a Claude session with no yes out of its routing data. It
+   must refuse a message for that session with the reason `not-published`.
+4. A session that accepts this risk has a second control: the owner sets
+   `crossSessionInbound` for that session. When a value applies, the exception for
+   a child does not apply. The value `hold` shows a notice, and it delivers nothing
+   until an `accept` applies. The value `refuse` drops each message. The value
+   `accept` delivers each message, so it protects nothing. Use the `--settings` flag
+   of Claude Code for one session. A value in the user settings applies to every
+   session. The gateway cannot see this value, so `--skip-hold-gate` stays required,
+   and the state of a message that Claude Code holds is `adapter-accepted`. The value
+   also applies to a message from this machine and to the project box, and the
+   command there still says `sent`.
+5. A message from this machine to a Claude session also uses the token, from any
+   sender. The sender can be a session, a Codex session with no sandbox, or a
+   program. The flag does not apply to that path. So a person that you accepted can
+   ask a published Codex session with no sandbox to send to a Claude session that is
+   not published. That path stays inside one user of the operating system, and rule
+   1 of section 9 still holds.
 
 ## 8. Replies
 

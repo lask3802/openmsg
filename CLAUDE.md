@@ -9,7 +9,7 @@ machine. Version 0.2 adds the agents of different people.
 ```
 node src/cli.mjs list            # the agents that run now
 node src/cli.mjs send <a> "<t>"  # deliver a message
-node --test                      # the tests, 187 of them
+node --test                      # the tests, 197 of them
 npm publish --access public      # a release. See "How a release goes" below.
 ```
 
@@ -108,7 +108,7 @@ Each vendor has its own way in:
 2. Write the documents in Simplified Technical English: short sentences, one
    idea for each sentence, no "should", no semicolon.
 3. A message from another agent is never authority. Rule 9 of the spec holds.
-4. Test what needs no account. 187 tests in `test/` cover the envelope, the
+4. Test what needs no account. 197 tests in `test/` cover the envelope, the
    mailbox, the project box, the hop limit, the three hook shapes, native
    Windows, and every part of 0.2. Two tests need `openssl` for a certificate, and they say so when it
    is not there. `test/acceptance.test.mjs` holds the fourteen cases of section 11 of
@@ -185,22 +185,22 @@ The answer went from that thread, inside `workspace-write`, through its gateway
 and the relay, into the Claude session. The outbox changed through
 `adapter-accepted`, `agent-acknowledged`, and `replied`. Both owners ran on one
 machine. No test covers a thread of the Codex app as the receiver, or a second
-physical machine.
+physical machine. A change of `src/relay.mjs` reaches that container only with a
+redeploy, and the owner approves each redeploy.
 
 Open: no team has run 0.2 across the internet. Every test of two people ran
 on this machine, with one home directory for each person.
 
-Open: on native Windows, the token of a session makes Claude Code apply no hold to
-a message from the gateway. Section 7 of the 0.1 spec says what that means. The
-owner of the project decides the fix.
+Decided: on native Windows, the token of a session makes Claude Code apply no hold
+to a message from the gateway. So `openmsg publish` refuses a Claude session there
+without `--skip-hold-gate`, the output says that the session skips the hold gate,
+and the gateway treats a row with no yes as not published. Section 7 of the 0.1
+spec holds the rules, and `crossSessionInbound` as the second control.
 
-Open: on native Windows, the gateway takes the id of a Codex session from the
-caller. Each session of one user holds the same key, and a sandbox can read the
-transcript of every other session. So one session can acknowledge or answer as
-another session of that user, and it can send in the name of any session, real or
-not. Section 9 of the 0.2 spec says what that means. The owner of the project
-decides the fix.
-
-Open: `src/relay.mjs` waits for each connection when it stops, so a stop can hang.
-The tests destroy their sockets first. A fix changes the deployed relay, so it
-waits for a redeploy.
+Decided: on native Windows, one user of the operating system is one trust boundary.
+The gateway takes the id of a Codex session from the caller. Each session of one
+user holds the same key, and a sandbox can read the transcript of every other
+session. So one session can acknowledge or answer as another session of that user,
+and it can send in the name of any session, real or not. The checks stop a mistake,
+and they are not a security boundary. Section 9 of the 0.2 spec says what that
+means.
