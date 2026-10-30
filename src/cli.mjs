@@ -23,6 +23,7 @@ import * as limits from "./limits.mjs";
 import * as device from "./device.mjs";
 import * as dirsync from "./dirsync.mjs";
 import * as notes from "./notes.mjs";
+import * as service from "./service.mjs";
 import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import path from "node:path";
@@ -58,6 +59,8 @@ For the agents of another person, on another machine:
   openmsg dir list [--json]         the members of each project
   openmsg dir endpoint <owner> <url>  where the gateway of that owner answers
   openmsg dir revoke <project-id> <owner-id> [--reason <text>]
+  openmsg gateway install           start the gateway at each logon (Windows)
+  openmsg gateway uninstall         stop that
   openmsg gateway start [--port <n>] [--host <h>]
   openmsg publish <agent>           let the project reach this session
   openmsg unpublish <alias>         take a session back
@@ -613,7 +616,18 @@ function cmdOutbox(args) {
 
 async function cmdGateway(args) {
   const [sub = "start", ...rest] = args;
-  if (sub !== "start") throw new Error("usage: openmsg gateway start [--port <n>] [--host <h>] [--relay <url>]");
+  if (sub === "install") {
+    const out = await service.install(fileURLToPath(new URL("cli.mjs", import.meta.url)));
+    console.log(`the gateway starts at each logon. Log: ${out.log}`);
+    console.log(`Start it now without a window: ${service.runCommand(out.launcher)}`);
+    return;
+  }
+  if (sub === "uninstall") {
+    await service.uninstall();
+    console.log("the gateway does not start at logon now. A gateway that runs now keeps running");
+    return;
+  }
+  if (sub !== "start") throw new Error("usage: openmsg gateway start [--port <n>] [--host <h>] [--relay <url>] | gateway install | gateway uninstall");
   const me = identity.load();
   const host = flag(rest, "host") ?? "127.0.0.1";
   const port = Number(flag(rest, "port") ?? 7801);
@@ -951,7 +965,8 @@ function commandName() {
       // The name is not in this directory.
     }
   }
-  return `node ${mine}`;
+  // A hook of Claude Code on Windows runs in Git Bash, which removes a backslash.
+  return process.platform === "win32" ? `node "${mine.replaceAll("\\", "/")}"` : `node ${mine}`;
 }
 
 const [cmd, ...args] = process.argv.slice(2);

@@ -23,7 +23,7 @@ for (const [id, name] of [["11111111-aaaa", "degen-99"], ["22222222-bbbb", "dege
 }
 
 function cli(...args) {
-  const env = { ...process.env, HOME, OPENMSG_HOME: path.join(HOME, ".openmsg"), OPENMSG_SELF: "claude:degen-99" };
+  const env = { ...process.env, HOME, USERPROFILE: HOME, OPENMSG_HOME: path.join(HOME, ".openmsg"), OPENMSG_SELF: "claude:degen-99" };
   delete env.CLAUDE_CODE_MESSAGING_SOCKET;
   delete env.CODEX_THREAD_ID;
   return spawnSync("node", [CLI, ...args], { env, encoding: "utf8" });

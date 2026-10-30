@@ -5,6 +5,23 @@ import * as claude from "./adapters/claude.mjs";
 import * as opencode from "./adapters/opencode.mjs";
 import * as codex from "./adapters/codex.mjs";
 import { layoutOf, compose, bodyRange } from "./envelope.mjs";
+import { tokenFor } from "./sessiontokens.mjs";
+
+// The token belongs to the session that runs this command. macOS and Linux take a
+// connection without a token, and the inbound rules of the session apply to it.
+// Native Windows drops such a connection with no error, so the sender must learn
+// about it here. A hook of the session gives the token to the gateway.
+export function claudeToken(agent, { platform = process.platform, env = process.env } = {}) {
+  if (agent.transport?.path === env.CLAUDE_CODE_MESSAGING_SOCKET) return env.CLAUDE_CODE_MESSAGING_TOKEN;
+  if (platform !== "win32") return undefined;
+  const token = tokenFor(agent);
+  if (!token) {
+    throw new Error(
+      `no token for the session ${agent.name}. Run: openmsg install --hooks, then start that session again`,
+    );
+  }
+  return token;
+}
 
 // `parts` is the layout of the text that the model reads: the frame and the text
 // of the sender. Each adapter shows the two apart in its own way:
@@ -19,12 +36,7 @@ export async function deliverLocal(agent, message, { text = null, parts = null }
   if (!parts && !text) parts = layoutOf(message);
   const plain = parts ? compose(parts) : text;
   if (agent.vendor === "claude") {
-    // The token belongs to the session that runs this command. Another session
-    // reads its socket without one.
-    const token = agent.transport?.path === process.env.CLAUDE_CODE_MESSAGING_SOCKET
-      ? process.env.CLAUDE_CODE_MESSAGING_TOKEN
-      : undefined;
-    return claude.deliver(agent, message, { token, text: parts ? compose(parts, { ansi: true }) : text });
+    return claude.deliver(agent, message, { token: claudeToken(agent), text: parts ? compose(parts, { ansi: true }) : text });
   }
   if (agent.vendor === "opencode") return opencode.deliver(agent, message, parts ? { layout: parts } : { text });
   if (agent.vendor === "codex") return codex.deliver(agent, message, { text: plain, highlight: parts ? bodyRange(parts) : null });

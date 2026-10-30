@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = path.dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const ALICE = fs.mkdtempSync(path.join(os.tmpdir(), "openmsg-ga-"));
@@ -59,7 +59,7 @@ const script = path.join(BOB, "gateway.mjs");
 fs.writeFileSync(
   script,
   `import fs from "node:fs";
-   const gateway = await import(${JSON.stringify(path.join(ROOT, "src/gateway.mjs"))});
+   const gateway = await import(${JSON.stringify(pathToFileURL(path.join(ROOT, "src/gateway.mjs")).href)});
    const running = await gateway.serve({
      port: 0,
      host: "127.0.0.1",

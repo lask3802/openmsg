@@ -12,12 +12,13 @@ import { queueOverSocket } from "../src/adapters/codex.mjs";
 import { createMessage, layoutOf, compose, bodyRange } from "../src/envelope.mjs";
 
 // A short directory, because a Unix socket path has a small limit on macOS.
+// Windows takes a named pipe here.
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), "om-cx-"));
 after(() => fs.rmSync(DIR, { recursive: true, force: true }));
 
 // `answer` gives the reply to one request, or undefined for no reply.
 function fakeDaemon(name, answer) {
-  const socket = path.join(DIR, name);
+  const socket = process.platform === "win32" ? `\\\\.\\pipe\\${path.basename(DIR)}-${name}` : path.join(DIR, name);
   const seen = [];
   const server = http.createServer();
   server.on("upgrade", (request, raw) => {

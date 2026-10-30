@@ -5,6 +5,7 @@ import path from "node:path";
 import os from "node:os";
 import { execFile } from "node:child_process";
 import { registered } from "./selfregistry.mjs";
+import { listThreads } from "./adapters/codexrpc.mjs";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -261,6 +262,9 @@ export async function opencodeAgents({ maxAgeMs = 24 * 3600 * 1000 } = {}) {
 // that runs the session holds that file open. openmsg lists the open rollout
 // files of every Codex process, and reads the thread id from each one.
 export async function codexAgents() {
+  // Windows has no `pgrep` and no `lsof`. The app-server gives the threads, also
+  // the threads of the Codex app.
+  if (process.platform === "win32") return listThreads().catch(() => []);
   let index = null;
   const titles = () => (index ??= codexTitles());
   let pids = [];
@@ -420,10 +424,23 @@ const OTHER_AGENTS = new Set(["codex", "opencode", "cursor-agent"]);
 // only if the session is a parent of this command, and no other agent runs
 // between the two. One `ps` call gives the whole tree, so the walk has no
 // limit of depth.
+async function processList() {
+  if (process.platform !== "win32") {
+    return (await run("ps", ["-A", "-o", "pid=,ppid=,comm="])).stdout;
+  }
+  // Windows has no `ps`. Each line has the same shape as a line of `ps`.
+  const script = "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $_.Name }";
+  const { stdout } = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+    maxBuffer: 16 * 1024 * 1024,
+    windowsHide: true,
+  });
+  return stdout.replace(/\.exe\r?$/gim, "").replace(/\r/g, "");
+}
+
 export async function runsUnder(sessionPid) {
   let table;
   try {
-    const { stdout } = await run("ps", ["-A", "-o", "pid=,ppid=,comm="]);
+    const stdout = await processList();
     table = new Map(
       stdout.trim().split("\n").map((l) => {
         const [pid, ppid, ...comm] = l.trim().split(/\s+/);

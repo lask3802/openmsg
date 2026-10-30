@@ -39,8 +39,11 @@ test("the canonical form writes one text for one object", () => {
 
 test("an identity holds two keys, and the private keys stay closed", () => {
   const p = as(ALICE, () => identity.paths());
-  assert.equal(fs.statSync(p.signing).mode & 0o777, 0o600);
-  assert.equal(fs.statSync(p.encryption).mode & 0o777, 0o600);
+  // Windows has no mode bits. The access list of the user profile closes the files there.
+  if (process.platform !== "win32") {
+    assert.equal(fs.statSync(p.signing).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(p.encryption).mode & 0o777, 0o600);
+  }
   assert.equal(alice.keys.signing.alg, "Ed25519");
   assert.equal(alice.keys.encryption.alg, "X25519");
   assert.match(alice.ownerId, /^o_[0-9a-f]{8}$/);

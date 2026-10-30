@@ -19,6 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import { render } from "../envelope.mjs";
 import * as ws from "../wsframe.mjs";
+import { queueOverStdio } from "./codexrpc.mjs";
 
 const run = promisify(execFile);
 const RPC_TIMEOUT_MS = 5000;
@@ -30,6 +31,7 @@ function socketPath() {
 
 export async function deliver(agent, message, { text = null, highlight = null } = {}) {
   const body = text ?? render(message);
+  if (process.platform === "win32") return queueOverStdio(agent.id, body, highlight);
   const out = await queueOverSocket(agent.id, body, highlight);
   if (out) return out;
   return queueOverCli(agent.id, body);

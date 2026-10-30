@@ -1,8 +1,9 @@
 // Adapter: Claude Code.
-// Each Claude Code session listens on a Unix socket. A script writes two lines
-// to it: an auth line, then the message. The session delivers the message to its
-// model. An idle session starts a new turn. A busy session reads the message
-// between two tool calls.
+// Each Claude Code session listens on a Unix socket, or on a named pipe on native
+// Windows. A script writes two lines to it: an auth line, then the message. The
+// session delivers the message to its model. An idle session starts a new turn.
+// A busy session reads the message between two tool calls.
+// Native Windows requires the auth line, and it drops a connection without one.
 // Source: https://code.claude.com/docs/en/cross-session-messaging
 import net from "node:net";
 import { render } from "../envelope.mjs";

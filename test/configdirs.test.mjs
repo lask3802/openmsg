@@ -30,7 +30,7 @@ for (const [config, id, name] of records) {
 }
 
 function cli(env, ...args) {
-  const base = { ...process.env, HOME, OPENMSG_HOME: path.join(HOME, ".openmsg") };
+  const base = { ...process.env, HOME, USERPROFILE: HOME, OPENMSG_HOME: path.join(HOME, ".openmsg") };
   for (const k of ["OPENMSG_SELF", "CLAUDE_CODE_MESSAGING_SOCKET", "CODEX_THREAD_ID", "CLAUDE_CONFIG_DIR"]) delete base[k];
   return spawnSync("node", [CLI, ...args], { env: { ...base, ...env }, encoding: "utf8" });
 }

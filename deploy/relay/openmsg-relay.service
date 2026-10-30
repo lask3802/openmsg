@@ -1,0 +1,21 @@
+[Unit]
+Description=openmsg relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=openmsg
+Group=openmsg
+EnvironmentFile=/etc/openmsg-relay.env
+Environment=OPENMSG_RELAY_HOME=/var/lib/openmsg-relay
+ExecStart=/usr/local/bin/node /opt/openmsg/src/cli.mjs relay start --host ${RELAY_HOST} --port ${RELAY_PORT} --cert /etc/openmsg-relay/relay.crt --key /etc/openmsg-relay/relay.key
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/openmsg-relay
+
+[Install]
+WantedBy=multi-user.target

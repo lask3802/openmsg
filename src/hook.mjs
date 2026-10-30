@@ -17,6 +17,7 @@ import { register } from "./selfregistry.mjs";
 import { claudeAgents } from "./registry.mjs";
 import * as mailbox from "./mailbox.mjs";
 import * as projectbox from "./projectbox.mjs";
+import * as tokens from "./sessiontokens.mjs";
 import { render, MAX_HOPS } from "./envelope.mjs";
 
 function readStdin() {
@@ -70,6 +71,11 @@ export async function runHook(vendor) {
   const within = (m) => (m.openmsg?.hops?.length ?? 0) <= MAX_HOPS;
 
   if (vendor === "claude") {
+    // Only a hook gets the token of the session. See sessiontokens.mjs.
+    const { CLAUDE_CODE_MESSAGING_SOCKET: socket, CLAUDE_CODE_MESSAGING_TOKEN: token } = process.env;
+    if (process.platform === "win32" && socket && token && input.session_id) {
+      tokens.put({ id: input.session_id, socket, token });
+    }
     const taken = projectbox.take(info.cwd).map((t) => t.message).filter(within);
     if (taken.length === 0) return {};
     // The mailbox of a Claude session goes by its name. The session record
